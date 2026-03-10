@@ -46,7 +46,7 @@ Cada máquina recebe um **código de acesso único** gerado a partir do hardware
 ### 1. Clone o repositório
 
 ```bash
-git clone https://github.com/seu-usuario/remotelink.git
+git clone https://github.com/FelipeMzero/remotelink.git
 cd remotelink
 ```
 
