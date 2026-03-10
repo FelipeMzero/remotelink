@@ -15,8 +15,8 @@ from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.identity import get_machine_info, resolve_target, scan_local_network
-from core.client import RemoteLinkClient, probe_target
+from core.identity import get_machine_info, resolve_target, scan_local_network, NetworkScanner
+from core.client import RemoteLinkClient, probe_target, probe_hostname, resolve_hostname_to_ips
 from core.server import RemoteLinkServer
 
 logging.basicConfig(level=logging.INFO)
@@ -645,52 +645,90 @@ class ConnectPage(tk.Frame):
             return
         resolved = resolve_target(t)
         if not resolved:
-            messagebox.showerror("Erro", "Formato inválido.")
+            messagebox.showerror("Erro", "Formato inválido. Use código XXX-XXX-XXX, IP ou hostname.")
             return
         self._preview.show_loading(t)
         self._preview.pack(fill="x", pady=(0, 8))
 
         def probe():
-            if resolved.get("ip"):
-                info = probe_target(resolved["ip"])
-                info.update({"method": resolved["method"],
-                             "hostname": resolved.get("hostname") or info.get("hostname")})
-            else:
+            method = resolved["method"]
+            if method == "access_code":
+                # Código: scan local buscando a máquina com esse código
                 info = {"reachable": False, "ip": None,
-                        "hostname": resolved.get("hostname"),
-                        "method": resolved["method"]}
-            if resolved["method"] == "access_code":
-                info.update({"method": "access_code", "code": resolved["code"]})
+                        "method": "access_code",
+                        "code": resolved["code"],
+                        "hostname": "Aguardando descoberta local…",
+                        "platform": ""}
+                # Por ora retorna pendente — conexão por código usa scan
+                info["reachable"] = True
+                info["status"] = "pending_scan"
+            elif method == "hostname" and not resolved.get("ip"):
+                # Hostname não resolveu via DNS — tenta diretamente
+                info = probe_hostname(resolved["hostname"])
+                info["method"] = "hostname"
+                if not info.get("ip"):
+                    info["reachable"] = False
+                    info["error"] = "Hostname não encontrado na rede"
+            elif method == "hostname" and resolved.get("ip"):
+                # Hostname resolveu — probe via IP
+                info = probe_target(resolved["ip"])
+                info["method"] = "hostname"
+                info["hostname"] = resolved.get("hostname") or info.get("hostname")
+            else:
+                # IP direto
+                info = probe_target(resolved["ip"])
+                info["method"] = "ip"
+                info["hostname"] = resolved.get("hostname") or info.get("hostname") or resolved["ip"]
+
             self.after(0, lambda: self._preview.show_result(
                 info, connect_callback=self._on_connect))
 
-        threading.Thread(target=probe, daemon=True).start()
+        threading.Thread(target=probe, daemon=True, name="RL-Probe").start()
+
+    # Scanner assíncrono — atualiza a tabela em tempo real sem travar UI
+    _active_scanner = None
 
     def _scan(self):
+        # Para scan anterior se existir
+        if self._active_scanner:
+            self._active_scanner.stop()
+
         self._scan_btn.config(state="disabled", text="  Escaneando…")
         self._prog.pack(fill="x", pady=(0, 6))
         self._prog["value"] = 0
         for i in self._tree.get_children():
             self._tree.delete(i)
 
-        def run():
-            found = scan_local_network(
-                lambda p: self.after(0, lambda: self._prog.config(value=p*100)))
-            self.after(0, lambda: self._scan_done(found))
+        def on_found(machine):
+            # Chamado a cada máquina encontrada — atualiza em tempo real
+            self.after(0, lambda m=machine: self._tree.insert(
+                "", "end",
+                values=(m.get("hostname","—"), m.get("ip","—"),
+                        "Rede Local", "● Online"),
+                tags=(m.get("ip",""),)
+            ))
 
-        threading.Thread(target=run, daemon=True).start()
+        def on_progress(pct):
+            self.after(0, lambda p=pct: self._prog.config(value=p * 100))
 
-    def _scan_done(self, found):
+        def on_done(found):
+            self.after(0, lambda: self._scan_finished(found))
+
+        self._active_scanner = NetworkScanner(
+            on_found=on_found,
+            on_progress=on_progress,
+            on_done=on_done,
+            max_workers=100,
+            timeout=0.4,
+        )
+        self._active_scanner.start()
+
+    def _scan_finished(self, found):
         self._scan_btn.config(state="normal", text="⟳  Escanear rede")
         self._prog.pack_forget()
-        for m in found:
-            self._tree.insert("","end",
-                values=(m.get("hostname","—"), m.get("ip","—"),
-                        "Rede Local", "Online"),
-                tags=(m.get("ip",""),))
-        if not found:
-            self._tree.insert("","end",
-                values=("Nenhum computador RemoteLink encontrado","","",""))
+        if not found and not self._tree.get_children():
+            self._tree.insert("", "end",
+                values=("Nenhum computador RemoteLink encontrado na rede","","",""))
 
     def _tree_dbl(self, e):
         sel = self._tree.selection()
@@ -875,153 +913,406 @@ class MachineBanner(tk.Frame):
 # ── Viewer Window ──────────────────────────────────────────────────────────────
 
 class ViewerWindow(tk.Toplevel):
+    """
+    Janela de visualização remota.
+    Modo de captura automático:
+      - Mouse DENTRO do canvas  → teclado + mouse vão para o remoto
+      - Mouse FORA  do canvas   → teclado volta para o sistema local
+    Indicador visual na barra de status mostra o modo atual.
+    """
+
     def __init__(self, parent, client: RemoteLinkClient, remote_info: dict):
         super().__init__(parent)
-        self.client = client
+        self.client      = client
         self.remote_info = remote_info
-        hostname = remote_info.get("hostname", "Remoto")
-        self.title(f"RemoteLink  —  {hostname}")
-        self.configure(bg="#000000")
-        self.geometry("1152x720")
-        self.minsize(640, 480)
+
+        hostname = remote_info.get("hostname", remote_info.get("ip", "Remoto"))
+        self.title(f"RemoteLink — {hostname}")
+        self.configure(bg="#0a0a0a")
+        self.geometry("1280x760")
+        self.minsize(800, 500)
+
+        # Dimensões da tela remota (atualizadas no 1º frame)
         self._rw = 1920
         self._rh = 1080
-        self._enabled = True
-        self._fc = 0
-        self._fts = time.time()
-        self._photo = None
-        self._cimg = None
+
+        # Renderização
+        self._photo        = None
+        self._cimg         = None
+        self._latest_frame = None
+        self._frame_lock   = threading.Lock()
+        self._fc           = 0
+        self._fts          = time.time()
+        self._enabled      = True
+
+        # ── Modo de captura ────────────────────────────────────────────────
+        # True  = mouse está sobre o canvas → input vai para o remoto
+        # False = mouse fora → input vai para o sistema local
+        self._capturing = False
+
         self._build()
-        self.client.on_frame = self._on_frame
-        self.client.on_disconnected = self._disconnected
+
+        self.client.on_frame        = self._on_frame
+        self.client.on_disconnected = self._on_disconnected
         self.protocol("WM_DELETE_WINDOW", self._close)
 
+        self._schedule_render()
+        self._update_fps()
+
+    # ── Build UI ───────────────────────────────────────────────────────────
+
     def _build(self):
-        tb = tk.Frame(self, bg=C["surface"], height=44)
-        tb.pack(fill="x")
+        h  = self.remote_info.get("hostname", self.remote_info.get("ip", "—"))
+        ip = self.remote_info.get("ip", "")
+
+        # ── Toolbar ───────────────────────────────────────────────────────
+        tb = tk.Frame(self, bg=C["surface"], height=46)
+        tb.pack(fill="x", side="top")
         tb.pack_propagate(False)
 
-        h = self.remote_info.get("hostname","—")
-        ip = self.remote_info.get("ip","")
+        # Breadcrumb
         tk.Label(tb, text="RemoteLink", font=FONT_UI_SM,
                  bg=C["surface"], fg=C["text_secondary"]).pack(side="left", padx=(14,0))
-        tk.Label(tb, text=" › ", font=FONT_UI_SM,
+        tk.Label(tb, text=" ›", font=FONT_UI_SM,
                  bg=C["surface"], fg=C["text_disabled"]).pack(side="left")
-        tk.Label(tb, text=h, font=FONT_UI_BODY_B,
+        tk.Label(tb, text=f" {h}", font=FONT_UI_BODY_B,
                  bg=C["surface"], fg=C["text"]).pack(side="left")
-        if ip:
-            tk.Label(tb, text=f"  ({ip})", font=FONT_UI_SM,
+        if ip and ip != h:
+            tk.Label(tb, text=f" ({ip})", font=FONT_UI_SM,
                      bg=C["surface"], fg=C["text_secondary"]).pack(side="left")
 
-        self._fps = tk.Label(tb, text="— fps", font=FONT_MONO,
-                              bg=C["surface"], fg=C["text_caption"])
-        self._fps.pack(side="right", padx=(0, 10))
+        tk.Frame(tb, width=14, bg=C["surface"]).pack(side="left")
+
+        # Botões de teclas especiais
+        def btn(lbl, cmd):
+            FlatBtn(tb, text=lbl, variant="subtle",
+                    command=cmd).pack(side="left", padx=2, pady=7)
+
+        btn("Alt+Tab",      self._send_alt_tab)
+        btn("Win",          self._send_win)
+        btn("Ctrl+Alt+Del", self._send_cad)
+        btn("PrtScr",       self._send_prtscr)
+        btn("Ctrl+C",       lambda: self.client.send_hotkey("ctrl","c"))
+        btn("Ctrl+V",       lambda: self.client.send_hotkey("ctrl","v"))
+        btn("Ctrl+Z",       lambda: self.client.send_hotkey("ctrl","z"))
+        btn("Ctrl+W",       lambda: self.client.send_hotkey("ctrl","w"))
+
+        # Direita
+        FlatBtn(tb, text="Desconectar", icon="⊗", variant="danger",
+                command=self._close).pack(side="right", padx=(0,10), pady=7)
+
         self._cstatus = tk.Label(tb, text="● Conectado", font=FONT_UI_SM,
                                   bg=C["surface"], fg=C["success"])
-        self._cstatus.pack(side="right", padx=(0, 10))
+        self._cstatus.pack(side="right", padx=(0,10))
 
-        FlatBtn(tb, text="Desconectar", icon="⊗", variant="danger",
-                command=self._close).pack(side="right", padx=(0,8), pady=6)
+        self._fps_lbl = tk.Label(tb, text="— fps", font=FONT_MONO,
+                                  bg=C["surface"], fg=C["text_caption"])
+        self._fps_lbl.pack(side="right", padx=(0,6))
 
-        for lbl, fn in [
-            ("Ctrl+Alt+Del", lambda: self.client.send_hotkey("ctrl","alt","delete")),
-            ("Win",          lambda: self.client.send_key_press("win")),
-            ("Alt+Tab",      lambda: self.client.send_hotkey("alt","tab")),
-        ]:
-            FlatBtn(tb, text=lbl, variant="subtle",
-                    command=fn).pack(side="left", padx=2, pady=6)
+        # ── Indicador de modo de captura ──────────────────────────────────
+        self._mode_lbl = tk.Label(tb, text="⌨ Local", font=FONT_UI_SM,
+                                   bg=C["surface"], fg=C["text_secondary"],
+                                   cursor="hand2")
+        self._mode_lbl.pack(side="right", padx=(0,10))
+        self._mode_lbl.bind("<Button-1>", lambda e: self._toggle_capture())
 
         Divider(self).pack(fill="x")
 
-        self._cv = tk.Canvas(self, bg="#000000", cursor="none",
-                              highlightthickness=0)
+        # ── Canvas ────────────────────────────────────────────────────────
+        self._cv = tk.Canvas(self, bg="#0a0a0a", highlightthickness=0,
+                              cursor="none")
         self._cv.pack(fill="both", expand=True)
 
-        self._cv.bind("<Motion>",          self._mv)
-        self._cv.bind("<Button-1>",        lambda e: self._cl(e,"left"))
-        self._cv.bind("<Button-3>",        lambda e: self._cl(e,"right"))
-        self._cv.bind("<Button-2>",        lambda e: self._cl(e,"middle"))
-        self._cv.bind("<Double-Button-1>", self._db)
-        self._cv.bind("<MouseWheel>",      self._sc)
-        self.bind("<KeyPress>",            self._kp)
-        self.focus_set()
-        self._upd_fps()
+        # Cursor local — só visível quando capturando
+        self._cursor_item = self._cv.create_oval(
+            -20, -20, -10, -10,
+            fill="#FF3B30", outline="#FFFFFF", width=1.5,
+            tags="cursor", state="hidden")
 
-    def _on_frame(self, data, ts):
+        # ── Borda de captura ativa (anel azul em volta do canvas) ─────────
+        self._border = self._cv.create_rectangle(
+            0, 0, 0, 0,
+            outline=C["accent"], width=3,
+            tags="border", state="hidden")
+
+        # ── Mouse bindings ────────────────────────────────────────────────
+        self._cv.bind("<Enter>",           self._on_enter_canvas)
+        self._cv.bind("<Leave>",           self._on_leave_canvas)
+        self._cv.bind("<Motion>",          self._on_mouse_motion)
+        self._cv.bind("<ButtonPress-1>",   lambda e: self._on_btn(e,"left"))
+        self._cv.bind("<ButtonPress-3>",   lambda e: self._on_btn(e,"right"))
+        self._cv.bind("<ButtonPress-2>",   lambda e: self._on_btn(e,"middle"))
+        self._cv.bind("<Double-Button-1>", self._on_dbl)
+        self._cv.bind("<MouseWheel>",      self._on_scroll)
+        self._cv.bind("<Button-4>",        lambda e: self._on_scroll_delta(e,  3))
+        self._cv.bind("<Button-5>",        lambda e: self._on_scroll_delta(e, -3))
+
+        # Resize: atualiza borda
+        self._cv.bind("<Configure>", self._on_canvas_resize)
+
+        # ── Teclado ───────────────────────────────────────────────────────
+        # Bind na janela E no canvas para garantir que eventos chegam
+        # independentemente de qual widget tem o foco
+        for widget in (self, self._cv):
+            widget.bind("<KeyPress>",   self._on_key_press)
+            widget.bind("<KeyRelease>", self._on_key_release)
+
+        # Garante que o canvas pode receber foco de teclado
+        self._cv.config(takefocus=True)
+
+        try:
+            self.bind_all("<Alt-Tab>", self._on_key_press)
+        except Exception:
+            pass
+
+    # ── Modo de captura ────────────────────────────────────────────────────
+
+    def _on_enter_canvas(self, e):
+        """Mouse entrou no canvas → ativa captura."""
+        self._set_capturing(True)
+
+    def _on_leave_canvas(self, e):
+        """Mouse saiu do canvas → desativa captura."""
+        self._set_capturing(False)
+
+    def _toggle_capture(self):
+        """Clique no indicador → alterna modo manualmente."""
+        self._set_capturing(not self._capturing)
+
+    def _set_capturing(self, active: bool):
+        if self._capturing == active:
+            return
+        self._capturing = active
+
+        if active:
+            self._cv.config(cursor="none")
+            self._cv.itemconfig("cursor", state="normal")
+            self._cv.itemconfig("border", state="normal")
+            self._mode_lbl.config(
+                text="⬤ Remoto", fg=C["accent_text"],
+                font=(FONT_UI_SM[0], FONT_UI_SM[1], "bold"))
+            # Foco na janela para garantir KeyPress — canvas não propaga por padrão
+            self.focus_force()
+        else:
+            self._cv.config(cursor="")
+            self._cv.itemconfig("cursor", state="hidden")
+            self._cv.itemconfig("border", state="hidden")
+            self._mode_lbl.config(
+                text="⌨ Local", fg=C["text_secondary"],
+                font=FONT_UI_SM)
+
+    def _on_canvas_resize(self, e):
+        """Atualiza posição da borda quando o canvas é redimensionado."""
+        w, h = e.width, e.height
+        self._cv.coords("border", 2, 2, w-2, h-2)
+
+    # ── Frame rendering ────────────────────────────────────────────────────
+
+    def _on_frame(self, data: bytes, ts: int):
+        with self._frame_lock:
+            self._latest_frame = data
+            self._fc += 1
+
+    def _schedule_render(self):
+        self._render_frame()
+        if self._enabled:
+            self.after(16, self._schedule_render)
+
+    def _render_frame(self):
+        with self._frame_lock:
+            data = self._latest_frame
+            self._latest_frame = None
+        if not data:
+            return
         try:
             from PIL import Image, ImageTk
             img = Image.open(io.BytesIO(data))
             self._rw, self._rh = img.size
+
             cw = self._cv.winfo_width()
             ch = self._cv.winfo_height()
-            if cw > 1 and ch > 1:
-                img.thumbnail((cw, ch), Image.LANCZOS)
+            if cw < 2 or ch < 2:
+                return
+
+            sc = min(cw / self._rw, ch / self._rh)
+            nw = max(1, int(self._rw * sc))
+            nh = max(1, int(self._rh * sc))
+            # LANCZOS para máxima nitidez ao redimensionar
+            img = img.resize((nw, nh), Image.LANCZOS)
+
             photo = ImageTk.PhotoImage(img)
-            def upd():
-                self._photo = photo
-                if self._cimg is None:
-                    self._cimg = self._cv.create_image(
-                        cw//2, ch//2, image=photo, anchor="center")
-                else:
-                    self._cv.coords(self._cimg, cw//2, ch//2)
-                    self._cv.itemconfig(self._cimg, image=photo)
-            self.after(0, upd)
-            self._fc += 1
-        except Exception:
-            pass
+            self._photo = photo
+
+            cx, cy = cw // 2, ch // 2
+            if self._cimg is None:
+                self._cimg = self._cv.create_image(cx, cy, image=photo,
+                                                    anchor="center", tags="frame")
+            else:
+                self._cv.itemconfig(self._cimg, image=photo)
+                self._cv.coords(self._cimg, cx, cy)
+
+            self._cv.tag_lower("frame")
+            self._cv.tag_raise("cursor")
+            self._cv.tag_raise("border")
+        except Exception as e:
+            logger.debug(f"render: {e}")
+
+    # ── Coordenadas ────────────────────────────────────────────────────────
 
     def _tr(self, cx, cy):
         cw = self._cv.winfo_width()
         ch = self._cv.winfo_height()
-        if cw <= 0 or ch <= 0:
-            return cx, cy
-        sc = min(cw/self._rw, ch/self._rh)
-        ox = (cw - int(self._rw*sc))//2
-        oy = (ch - int(self._rh*sc))//2
-        return (max(0, min(int((cx-ox)/sc), self._rw)),
-                max(0, min(int((cy-oy)/sc), self._rh)))
+        if cw < 2 or ch < 2 or self._rw < 1 or self._rh < 1:
+            return 0, 0
+        sc = min(cw / self._rw, ch / self._rh)
+        ox = (cw - int(self._rw * sc)) // 2
+        oy = (ch - int(self._rh * sc)) // 2
+        rx = max(0, min(int((cx - ox) / sc), self._rw - 1))
+        ry = max(0, min(int((cy - oy) / sc), self._rh - 1))
+        return rx, ry
 
-    def _mv(self, e):
-        if self._enabled:
-            rx,ry = self._tr(e.x,e.y); self.client.send_mouse_move(rx,ry)
-    def _cl(self, e, btn):
-        if self._enabled:
-            rx,ry = self._tr(e.x,e.y); self.client.send_mouse_click(rx,ry,btn)
-    def _db(self, e):
-        if self._enabled:
-            rx,ry = self._tr(e.x,e.y); self.client.send_mouse_dblclick(rx,ry)
-    def _sc(self, e):
-        if self._enabled:
-            rx,ry = self._tr(e.x,e.y)
-            self.client.send_mouse_scroll(rx,ry, 1 if e.delta>0 else -1)
-    def _kp(self, e):
-        if not self._enabled: return
-        km = {"Return":"enter","BackSpace":"backspace","Delete":"delete",
-              "Escape":"escape","Tab":"tab","space":"space",
-              "Up":"up","Down":"down","Left":"left","Right":"right",
-              "Home":"home","End":"end","Prior":"pageup","Next":"pagedown",
-              **{f"F{i}":f"f{i}" for i in range(1,13)}}
-        if e.keysym in km:
-            self.client.send_key_press(km[e.keysym])
-        elif e.char and len(e.char)==1:
-            self.client.send_text(e.char)
+    def _move_cursor(self, cx, cy):
+        r = 5
+        self._cv.coords("cursor", cx-r, cy-r, cx+r, cy+r)
 
-    def _disconnected(self):
+    # ── Mouse events ───────────────────────────────────────────────────────
+
+    def _on_mouse_motion(self, e):
+        self._move_cursor(e.x, e.y)
+        if self._capturing and self._enabled:
+            rx, ry = self._tr(e.x, e.y)
+            self.client.send_mouse_move(rx, ry)
+
+    def _on_btn(self, e, btn: str):
+        if self._capturing and self._enabled:
+            rx, ry = self._tr(e.x, e.y)
+            self.client.send_mouse_click(rx, ry, btn)
+        self.focus_force()
+
+    def _on_dbl(self, e):
+        if self._capturing and self._enabled:
+            rx, ry = self._tr(e.x, e.y)
+            self.client.send_mouse_dblclick(rx, ry)
+
+    def _on_scroll(self, e):
+        if self._capturing and self._enabled:
+            rx, ry = self._tr(e.x, e.y)
+            self.client.send_mouse_scroll(rx, ry, 3 if e.delta > 0 else -3)
+
+    def _on_scroll_delta(self, e, d):
+        if self._capturing and self._enabled:
+            rx, ry = self._tr(e.x, e.y)
+            self.client.send_mouse_scroll(rx, ry, d)
+
+    # ── Keyboard events ────────────────────────────────────────────────────
+
+    _KEY_MAP = {
+        "Return":"enter",    "BackSpace":"backspace", "Delete":"delete",
+        "Escape":"escape",   "Tab":"tab",             "space":"space",
+        "Up":"up",           "Down":"down",           "Left":"left",
+        "Right":"right",     "Home":"home",           "End":"end",
+        "Prior":"pageup",    "Next":"pagedown",       "Insert":"insert",
+        "Print":"printscreen","Pause":"pause",        "Caps_Lock":"capslock",
+        "Num_Lock":"numlock","Scroll_Lock":"scrolllock",
+        "Super_L":"win",     "Super_R":"win",
+        "Alt_L":"alt",       "Alt_R":"alt",
+        "Control_L":"ctrl",  "Control_R":"ctrl",
+        "Shift_L":"shift",   "Shift_R":"shift",
+        "KP_Enter":"enter",  "KP_Add":"add",          "KP_Subtract":"subtract",
+        "KP_Multiply":"multiply","KP_Divide":"divide","KP_Decimal":"decimal",
+        **{f"KP_{i}":f"num{i}" for i in range(10)},
+        **{f"F{i}":f"f{i}" for i in range(1,25)},
+    }
+
+    _ONLY_MODS = {
+        "Alt_L","Alt_R","Control_L","Control_R","Shift_L","Shift_R",
+        "Super_L","Super_R","Caps_Lock","Num_Lock","Scroll_Lock",
+        "Meta_L","Meta_R","ISO_Level3_Shift",
+    }
+
+    def _on_key_press(self, e):
+        # Só processa se estiver capturando
+        if not self._capturing or not self._enabled:
+            return
+
+        ks     = e.keysym
+        state  = e.state
+        ctrl   = bool(state & 0x004)
+        alt    = bool(state & 0x008) or bool(state & 0x080)
+        shift  = bool(state & 0x001)
+        win    = bool(state & 0x040)
+
+        # Hotkeys especiais
+        if ctrl and alt and ks in ("Delete","KP_Delete"):
+            self.client.send_hotkey("ctrl","alt","delete"); return
+        if alt and ks == "Tab":
+            self.client.send_hotkey("alt","tab"); return
+        if win or ks in ("Super_L","Super_R"):
+            self.client.send_key_press("win"); return
+        if ks == "Print":
+            self.client.send_key_press("printscreen"); return
+
+        # Teclas mapeadas
+        if ks in self._KEY_MAP:
+            mapped = self._KEY_MAP[ks]
+            mods = []
+            if ctrl:  mods.append("ctrl")
+            if alt:   mods.append("alt")
+            if shift and mapped not in (
+                    "shift","enter","backspace","delete","tab",
+                    "escape","space","up","down","left","right",
+                    "home","end","pageup","pagedown"):
+                mods.append("shift")
+            if mods:  self.client.send_hotkey(*mods, mapped)
+            else:     self.client.send_key_press(mapped)
+            return
+
+        # Caractere normal
+        if e.char and len(e.char) == 1 and ks not in self._ONLY_MODS:
+            if ctrl and not alt:
+                self.client.send_hotkey("ctrl", e.char.lower())
+            elif alt and not ctrl:
+                self.client.send_hotkey("alt", e.char.lower())
+            else:
+                self.client.send_text(e.char)
+
+    def _on_key_release(self, e):
+        pass  # reservado
+
+    # ── Botões especiais ───────────────────────────────────────────────────
+
+    def _send_alt_tab(self):   self.client.send_hotkey("alt","tab")
+    def _send_win(self):       self.client.send_key_press("win")
+    def _send_cad(self):       self.client.send_hotkey("ctrl","alt","delete")
+    def _send_prtscr(self):    self.client.send_key_press("printscreen")
+
+    # ── FPS ────────────────────────────────────────────────────────────────
+
+    def _update_fps(self):
+        try:
+            el = time.time() - self._fts
+            if el >= 1.0:
+                fps = self._fc / el
+                col = (C["success"] if fps >= 45
+                       else C["warning"] if fps >= 20
+                       else C["error"])
+                self._fps_lbl.config(text=f"{fps:.0f} fps", fg=col)
+                self._fc  = 0
+                self._fts = time.time()
+            self.after(500, self._update_fps)
+        except Exception:
+            pass
+
+    # ── Disconnect ─────────────────────────────────────────────────────────
+
+    def _on_disconnected(self):
         self.after(0, lambda: self._cstatus.config(
             text="● Desconectado", fg=C["error"]))
 
-    def _upd_fps(self):
-        el = time.time()-self._fts
-        if el >= 1.0:
-            try:
-                self._fps.config(text=f"{self._fc/el:.0f} fps")
-            except Exception: return
-            self._fc = 0; self._fts = time.time()
-        self.after(1000, self._upd_fps)
-
     def _close(self):
         self._enabled = False
-        self.client.disconnect()
+        try: self.client.disconnect()
+        except Exception: pass
         self.destroy()
 
 
@@ -1116,27 +1407,165 @@ class RemoteLinkApp(tk.Tk):
         self._pages["share"]._do_toggle()
 
     def _do_connect(self, info: dict):
-        ip = info.get("ip")
-        if not ip:
-            messagebox.showerror("Erro",
-                "Não foi possível resolver o endereço.\n"
-                "Verifique o código ou hostname e tente novamente.")
+        """Conecta com suporte a código (case-insensitive), IP e hostname multi-IP."""
+        method = info.get("method", "ip")
+        ip     = info.get("ip")
+        code   = (info.get("code") or "").strip().upper()
+
+        # Conexão por código: precisa primeiro achar a máquina na rede local
+        if method == "access_code" and not ip:
+            self._connect_by_code(code)
             return
+
+        if not ip:
+            messagebox.showerror("Erro de Conexão",
+                "Não foi possível resolver o endereço IP.\n\n"
+                "Certifique-se que o RemoteLink está rodando no alvo\n"
+                "e que ambos estão na mesma rede.")
+            return
+
+        def on_error(msg):
+            self.after(0, lambda m=msg: messagebox.showerror("Erro de Conexão", m))
+
         self.client = RemoteLinkClient(
             on_status_change=lambda s: None,
-            on_error=lambda e: self.after(0, lambda: messagebox.showerror("Erro", e)),
+            on_error=on_error,
         )
+
         def run():
-            code = info.get("code","") or self.machine_info["access_code"]
-            ok = self.client.connect(ip=ip, access_code=code,
-                                      local_access_code=self.machine_info["access_code"])
-            if ok:
-                rinfo = self.client.remote_info or {}
-                rinfo["ip"] = ip
+            hostname = info.get("hostname", "")
+
+            # Monta lista de IPs para tentar
+            ips_to_try = [ip]
+            if method == "hostname" and hostname:
+                for extra_ip in resolve_hostname_to_ips(hostname):
+                    if extra_ip not in ips_to_try:
+                        ips_to_try.append(extra_ip)
+
+            # Regra de código:
+            # - Código de acesso digitado → envia o código do ALVO
+            # - IP direto ou hostname    → envia string vazia (servidor aceita sem código)
+            send_code = code if method == "access_code" else ""
+
+            for try_ip in ips_to_try:
+                ok = self.client.connect(
+                    ip=try_ip,
+                    access_code=send_code,
+                    local_access_code=self.machine_info["access_code"],
+                )
+                if ok:
+                    rinfo = self.client.remote_info or {}
+                    rinfo["ip"]       = try_ip
+                    rinfo["hostname"] = hostname or rinfo.get("hostname", try_ip)
+                    self.after(0, lambda r=rinfo: self._open_viewer(r))
+                    return
+
+            # Todos os IPs falharam — já mostrou erro via on_error callback
+            self.client = None
+
+        threading.Thread(target=run, daemon=True, name="RL-Connect").start()
+
+    def _connect_by_code(self, code: str):
+        """
+        Conexão por código de acesso:
+        Escaneia a rede local e tenta o código em cada máquina encontrada.
+        """
+        from tkinter import messagebox as mb
+
+        # Janela de progresso simples
+        prog_win = tk.Toplevel(self)
+        prog_win.title("Buscando máquina…")
+        prog_win.geometry("360x120")
+        prog_win.resizable(False, False)
+        prog_win.configure(bg=C["surface"])
+        prog_win.grab_set()
+        prog_win.transient(self)
+
+        tk.Label(prog_win, text=f"Procurando código  {code}  na rede…",
+                 font=FONT_UI, bg=C["surface"], fg=C["text"]).pack(pady=(20, 8))
+        bar = ttk.Progressbar(prog_win, mode="indeterminate",
+                              style="Horizontal.TProgressbar")
+        bar.pack(fill="x", padx=30, pady=(0, 8))
+        bar.start(12)
+        status_lbl = tk.Label(prog_win, text="Escaneando…",
+                              font=FONT_UI_SM, bg=C["surface"],
+                              fg=C["text_secondary"])
+        status_lbl.pack()
+
+        found_event = threading.Event()
+        result = {"ip": None, "info": None, "cancelled": False}
+
+        def cancel():
+            result["cancelled"] = True
+            found_event.set()
+            prog_win.destroy()
+
+        prog_win.protocol("WM_DELETE_WINDOW", cancel)
+
+        def scan_and_try():
+            from core.client import probe_target
+            from core.identity import NetworkScanner, get_all_local_ips
+
+            my_ips = set(get_all_local_ips())
+
+            def on_found(machine):
+                if found_event.is_set() or result["cancelled"]:
+                    return
+                ip = machine["ip"]
+                try:
+                    prog_win.after(0, lambda: status_lbl.config(
+                        text=f"Testando {ip}…"))
+                except Exception:
+                    return
+                # Tenta conectar com o código nesta máquina
+                from core.client import RemoteLinkClient
+                test_client = RemoteLinkClient()
+                ok = test_client.connect(ip=ip, access_code=code)
+                if ok:
+                    result["ip"]   = ip
+                    result["info"] = test_client.remote_info or {}
+                    result["info"]["ip"] = ip
+                    # Guarda o client conectado
+                    result["client"] = test_client
+                    found_event.set()
+                else:
+                    test_client.disconnect()
+
+            def on_done(found_list):
+                found_event.set()  # Scan completo, não encontrou
+
+            scanner = NetworkScanner(
+                on_found=on_found,
+                on_done=on_done,
+                max_workers=80,
+                timeout=0.4,
+            )
+            scanner.start()
+            found_event.wait(timeout=45)
+
+            if result["cancelled"]:
+                return
+
+            try:
+                prog_win.destroy()
+            except Exception:
+                pass
+
+            if result["ip"] and not result["cancelled"]:
+                self.client = result["client"]
+                rinfo = result["info"]
                 self.after(0, lambda: self._open_viewer(rinfo))
             else:
-                self.client = None
-        threading.Thread(target=run, daemon=True).start()
+                self.after(0, lambda: mb.showerror(
+                    "Código não encontrado",
+                    f"Nenhuma máquina com o código  {code}  foi encontrada na rede.\n\n"
+                    "Verifique se:\n"
+                    "• O RemoteLink está aberto no computador alvo\n"
+                    "• Ambos estão na mesma rede (LAN/WiFi)\n"
+                    "• O código está correto"
+                ))
+
+        threading.Thread(target=scan_and_try, daemon=True, name="RL-CodeScan").start()
 
     def _open_viewer(self, remote_info):
         if self.viewer_window and self.viewer_window.winfo_exists():

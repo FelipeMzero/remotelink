@@ -389,6 +389,9 @@ def _print_distribution_guide(exe_path: str):
   O arquivo {os.path.basename(exe_path)} é completamente standalone.
   Inclui o Python {sys.version.split()[0]} e todas as dependências embutidas.
 
+  Portas necessárias: 52340 (frames) e 52341 (input)
+  Libere ambas no firewall!
+
   Para distribuir:
     1. Copie apenas o arquivo  RemoteLink.exe
     2. Cole em qualquer Windows 10/11 — sem instalar nada
