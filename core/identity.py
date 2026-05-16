@@ -1,6 +1,6 @@
 """
 RemoteLink - Machine Identity & Network Discovery
-- Código de acesso case-insensitive
+- Codigo de acesso somente numeros (formato XXX-XXX)
 - Detecta todas as interfaces (cabeada + WiFi)
 - Scan de rede sem travar a UI
 """
@@ -13,7 +13,7 @@ import subprocess
 import json
 import os
 import ipaddress
-import struct
+import re
 import threading
 from pathlib import Path
 
@@ -24,44 +24,48 @@ REMOTELINK_PORT = 52340
 # ── Helpers de rede ────────────────────────────────────────────────────────────
 
 def get_all_local_ips() -> list[str]:
-    """
-    Retorna TODOS os IPs locais da máquina (cabeado + WiFi + VPN).
-    Ignora loopback e link-local (169.254.x.x).
-    """
     ips = set()
     try:
-        # Método principal: conecta UDP para descobrir IPs de saída
         for target in ("8.8.8.8", "1.1.1.1"):
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.settimeout(2)
                 s.connect((target, 80))
                 ips.add(s.getsockname()[0])
                 s.close()
             except Exception:
                 pass
 
-        # Método secundário: resolve todas as interfaces via gethostbyname_ex
         try:
             hostname = socket.gethostname()
             _, _, addr_list = socket.gethostbyname_ex(hostname)
-            for addr in addr_list:
-                ips.add(addr)
+            ips.update(addr_list)
         except Exception:
             pass
 
-        # Método terciário: socket.getaddrinfo
         try:
             for info in socket.getaddrinfo(socket.gethostname(), None):
                 addr = info[4][0]
-                if ":" not in addr:  # Ignora IPv6
+                if ":" not in addr:
                     ips.add(addr)
         except Exception:
             pass
 
+        if platform.system() == "Windows":
+            try:
+                result = subprocess.run(
+                    ["ipconfig"], capture_output=True, text=True, timeout=5
+                )
+                for line in result.stdout.splitlines():
+                    m = re.search(r'IPv4[^:]*:\s*(\d+\.\d+\.\d+\.\d+)', line)
+                    if m:
+                        ips.add(m.group(1))
+            except Exception:
+                pass
+
     except Exception:
         pass
 
-    # Filtra loopback e link-local
     valid = []
     for ip in ips:
         try:
@@ -75,9 +79,7 @@ def get_all_local_ips() -> list[str]:
 
 
 def get_local_ip() -> str:
-    """IP principal (primeira interface válida)."""
     ips = get_all_local_ips()
-    # Prefere 192.168.x.x ou 10.x.x.x
     for ip in ips:
         if ip.startswith(("192.168.", "10.", "172.")):
             return ip
@@ -85,7 +87,6 @@ def get_local_ip() -> str:
 
 
 def get_all_subnets() -> list[str]:
-    """Retorna todos os prefixos /24 das interfaces locais."""
     subnets = set()
     for ip in get_all_local_ips():
         parts = ip.split(".")
@@ -108,28 +109,28 @@ def _get_fingerprint() -> str:
 
 
 def generate_access_code(fingerprint: str) -> str:
-    """
-    Gera código no formato XXX-XXX-XXX.
-    Sem caracteres ambíguos: 0 O I 1 L
-    Sempre maiúsculo — comparação é case-insensitive.
-    """
-    charset = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+    """Gera codigo numerico no formato XXX-XXX (6 digitos)."""
     h = hashlib.md5(fingerprint.encode()).hexdigest()
     chars = []
-    for i in range(9):
+    for i in range(6):
         val = int(h[i * 2: i * 2 + 2], 16)
-        chars.append(charset[val % len(charset)])
-    return f"{chars[0:3]}-{''.join(chars[3:6])}-{''.join(chars[6:9])}"
+        chars.append(str(val % 10))
+    return f"{''.join(chars[0:3])}-{''.join(chars[3:6])}"
 
 
 def normalize_code(code: str) -> str:
-    """Normaliza código: strip, uppercase, remove espaços."""
-    return code.strip().upper().replace(" ", "")
+    """Remove tudo que nao for digito."""
+    return re.sub(r'[^0-9]', '', code)
 
 
-def codes_match(a: str, b: str) -> bool:
-    """Compara dois códigos de forma case-insensitive."""
-    return normalize_code(a) == normalize_code(b)
+def _is_valid_code(code: str) -> bool:
+    """Verifica se o codigo esta no formato numerico XXX-XXX."""
+    if not code or len(code) != 7:
+        return False
+    parts = code.split("-")
+    if len(parts) != 2:
+        return False
+    return len(parts[0]) == 3 and len(parts[1]) == 3 and parts[0].isdigit() and parts[1].isdigit()
 
 
 def load_or_create_identity() -> dict:
@@ -138,7 +139,15 @@ def load_or_create_identity() -> dict:
         try:
             with open(IDENTITY_FILE) as f:
                 data = json.load(f)
-            if data.get("fingerprint") == _get_fingerprint():
+            fp = _get_fingerprint()
+            if data.get("fingerprint") == fp:
+                code = data.get("access_code", "")
+                if _is_valid_code(code):
+                    return data
+                # Codigo antigo ou corrompido — regenera
+                data["access_code"] = generate_access_code(fp)
+                with open(IDENTITY_FILE, "w") as f:
+                    json.dump(data, f, indent=2)
                 return data
         except Exception:
             pass
@@ -158,11 +167,13 @@ def load_or_create_identity() -> dict:
 
 def get_machine_info() -> dict:
     identity = load_or_create_identity()
+    all_ips = get_all_local_ips()
+    local_ip = get_local_ip()
     return {
         "access_code": identity["access_code"],
         "hostname": socket.gethostname(),
-        "local_ip": get_local_ip(),
-        "all_ips": get_all_local_ips(),
+        "local_ip": local_ip,
+        "all_ips": all_ips,
         "platform": platform.system(),
         "platform_version": platform.version()[:40],
         "machine_arch": platform.machine(),
@@ -170,21 +181,15 @@ def get_machine_info() -> dict:
     }
 
 
-# ── Resolução de alvo ──────────────────────────────────────────────────────────
+# ── Resolucao de alvo ──────────────────────────────────────────────────────────
 
 def resolve_target(target: str) -> dict | None:
-    """
-    Resolve um alvo (código, IP ou hostname) para info de conexão.
-    Código é case-insensitive.
-    """
     target = target.strip()
     normalized = normalize_code(target)
 
-    # Código de acesso: XXX-XXX-XXX (com ou sem hífens, maiúsculo ou minúsculo)
-    clean = normalized.replace("-", "")
-    if len(clean) == 9 and clean.isalnum():
-        # Reconstrói no formato correto
-        formatted = f"{clean[0:3]}-{clean[3:6]}-{clean[6:9]}"
+    # Codigo de acesso: somente numeros, 6 digitos (XXX-XXX)
+    if len(normalized) == 6 and normalized.isdigit():
+        formatted = f"{normalized[0:3]}-{normalized[3:6]}"
         return {
             "display": formatted,
             "method": "access_code",
@@ -211,7 +216,7 @@ def resolve_target(target: str) -> dict | None:
     except ValueError:
         pass
 
-    # Hostname — tenta resolver
+    # Hostname
     try:
         ip = socket.gethostbyname(target)
         return {
@@ -231,6 +236,49 @@ def resolve_target(target: str) -> dict | None:
         }
 
 
+def _get_own_hostnames() -> set:
+    hostnames = {socket.gethostname(), socket.gethostname().lower(), socket.gethostname().upper()}
+    try:
+        hostnames.add(socket.gethostbyaddr(get_local_ip())[0])
+    except Exception:
+        pass
+    return hostnames
+
+
+def is_local_target(target: str) -> bool:
+    """Verifica se o alvo (IP, hostname ou codigo) e a propria maquina."""
+    local_ips = set(get_all_local_ips())
+    own_hostnames = _get_own_hostnames()
+
+    # IP
+    try:
+        ip = ipaddress.ip_address(target)
+        return str(ip) in local_ips
+    except ValueError:
+        pass
+
+    # Hostname
+    clean = target.strip().lower()
+    if clean in own_hostnames:
+        return True
+    try:
+        resolved = socket.gethostbyname(clean)
+        return resolved in local_ips
+    except Exception:
+        pass
+
+    return False
+
+
+def is_own_code(code: str) -> bool:
+    """Verifica se o codigo de acesso e o da propria maquina."""
+    try:
+        identity = load_or_create_identity()
+        return normalize_code(code) == normalize_code(identity.get("access_code", ""))
+    except Exception:
+        return False
+
+
 def ping_host(ip: str, timeout: float = 1.0) -> bool:
     try:
         system = platform.system().lower()
@@ -244,14 +292,9 @@ def ping_host(ip: str, timeout: float = 1.0) -> bool:
         return False
 
 
-# ── Scan de rede — sem travar a UI ────────────────────────────────────────────
+# ── Scan de rede ───────────────────────────────────────────────────────────────
 
 class NetworkScanner:
-    """
-    Scanner assíncrono que verifica TODAS as interfaces (cabeada + WiFi).
-    Usa pool de threads com limite para não travar.
-    Chama callbacks conforme vai encontrando — UI atualiza em tempo real.
-    """
 
     def __init__(self,
                  on_found: callable = None,
@@ -259,9 +302,9 @@ class NetworkScanner:
                  on_done: callable = None,
                  max_workers: int = 80,
                  timeout: float = 0.4):
-        self.on_found    = on_found      # (machine_dict) -> None
-        self.on_progress = on_progress   # (0.0 .. 1.0)   -> None
-        self.on_done     = on_done       # (found_list)   -> None
+        self.on_found    = on_found
+        self.on_progress = on_progress
+        self.on_done     = on_done
         self.max_workers = max_workers
         self.timeout     = timeout
 
@@ -271,21 +314,18 @@ class NetworkScanner:
         self._thread: threading.Thread | None = None
 
     def start(self):
-        """Inicia o scan em background."""
         self._stop_event.clear()
         self._found = []
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def stop(self):
-        """Para o scan."""
         self._stop_event.set()
 
     def _run(self):
         subnets = get_all_subnets()
         my_ips  = set(get_all_local_ips())
 
-        # Monta lista total de IPs a verificar (todas as interfaces)
         targets = []
         for subnet in subnets:
             for i in range(1, 255):
@@ -293,7 +333,6 @@ class NetworkScanner:
                 if ip not in my_ips:
                     targets.append(ip)
 
-        # Remove duplicatas mantendo ordem
         seen = set()
         unique_targets = []
         for ip in targets:
@@ -350,7 +389,6 @@ class NetworkScanner:
             threads.append(t)
             t.start()
 
-        # Aguarda todos terminarem
         for t in threads:
             t.join(timeout=self.timeout + 0.5)
 
@@ -358,9 +396,7 @@ class NetworkScanner:
             self.on_done(list(self._found))
 
 
-# Compat com código antigo
 def scan_local_network(progress_callback=None) -> list[dict]:
-    """Versão síncrona para compatibilidade."""
     results = []
     done_event = threading.Event()
 

@@ -13,6 +13,7 @@ import json
 import time
 import platform
 import io
+import uuid
 import logging
 from typing import Callable, Optional
 
@@ -70,6 +71,9 @@ class RemoteLinkServer:
     def _make_server_sock(self, port: int) -> socket.socket:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        # Enable TCP KeepAlive to detect dead connections faster
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
         s.bind(("0.0.0.0", port))
         s.listen(5)
         s.settimeout(1.0)
@@ -127,7 +131,6 @@ class RemoteLinkServer:
                     return
 
             # Aceita — guarda session_id para parear com canal de input
-            import uuid
             sid = str(uuid.uuid4())[:8]
             self._session_id = sid
 
@@ -201,25 +204,26 @@ class RemoteLinkServer:
             conn.settimeout(None)
             logger.info(f"Canal de input conectado: {addr}")
 
-            # Pre-importa pyautogui
-            pag = None
+            # Input controllers
+            ctrl = None
             try:
-                import pyautogui as _pag
-                _pag.FAILSAFE = False
-                _pag.PAUSE    = 0
-                pag = _pag
-                logger.info("pyautogui pronto para input")
+                from pynput.mouse import Controller as MouseCtrl
+                from pynput.keyboard import Controller as KeyCtrl
+                m_ctrl = MouseCtrl()
+                k_ctrl = KeyCtrl()
+                ctrl = (m_ctrl, k_ctrl)
+                logger.info("pynput controllers ready")
             except ImportError:
-                logger.error("pyautogui não encontrado! pip install pyautogui")
-
-            self._input_loop(conn, pag)
+                logger.error("pynput not found! pip install pynput")
+            
+            self._input_loop(conn, ctrl)
 
         except Exception as e:
             logger.error(f"input_conn error: {e}")
         finally:
             conn.close()
 
-    def _input_loop(self, conn: socket.socket, pag):
+    def _input_loop(self, conn: socket.socket, ctrl):
         """Loop de recepção de eventos de input."""
         while self._running:
             try:
@@ -234,12 +238,12 @@ class RemoteLinkServer:
                 data = self._recv_exact(conn, msg_len)
                 if not data:
                     break
-
+                
                 if msg_type == 0x02:   # input event
-                    self._exec_input(json.loads(data), pag)
+                    self._exec_input(json.loads(data), ctrl)
                 elif msg_type == 0x03: # control
-                    ctrl = json.loads(data)
-                    if ctrl.get("cmd") == "disconnect":
+                    ctrl_msg = json.loads(data)
+                    if ctrl_msg.get("cmd") == "disconnect":
                         # Fecha canal de frames também
                         if self._frame_conn:
                             try: self._frame_conn.close()
@@ -251,41 +255,56 @@ class RemoteLinkServer:
 
     # ── Execução de input ─────────────────────────────────────────────────
 
-    def _exec_input(self, ev: dict, pag):
-        if not pag:
-            logger.debug(f"input ignorado (sem pyautogui): {ev}")
+    def _exec_input(self, ev: dict, ctrl):
+        if not ctrl:
+            logger.debug(f"input ignorado (sem pynput): {ev}")
             return
+        
+        m_ctrl, k_ctrl = ctrl
         try:
             t = ev.get("type")
             x = int(ev.get("x", 0))
             y = int(ev.get("y", 0))
-
-            if   t == "mouse_move":
-                pag.moveTo(x, y, duration=0, _pause=False)
+            
+            if t == "mouse_move":
+                m_ctrl.position = (x, y)
             elif t == "mouse_click":
                 btn = ev.get("button", "left")
-                pag.click(x, y, button=btn, _pause=False)
-            elif t == "mouse_dblclick":
-                pag.doubleClick(x, y, _pause=False)
+                # Map button names to pynput buttons
+                from pynput.mouse import Button
+                pbtn = getattr(Button, btn, Button.left)
+                if ev.get("state") == "down":
+                    m_ctrl.press(pbtn)
+                else:
+                    m_ctrl.release(pbtn)
             elif t == "mouse_scroll":
-                pag.scroll(int(ev.get("delta", 1)), x=x, y=y, _pause=False)
-            elif t == "key_press":
-                key = ev.get("key","")
-                if key: pag.press(key, _pause=False)
-            elif t == "key_hotkey":
-                keys = ev.get("keys", [])
-                if keys:
-                    logger.debug(f"hotkey: {keys}")
-                    pag.hotkey(*keys, _pause=False)
+                m_ctrl.scroll(0, int(ev.get("delta", 0)))
+            elif t == "key_down":
+                key = ev.get("key", "")
+                if key:
+                    from pynput.keyboard import Key
+                    # Try to map to special key, otherwise use character
+                    k = getattr(Key, key, key)
+                    k_ctrl.press(k)
+            elif t == "key_up":
+                key = ev.get("key", "")
+                if key:
+                    from pynput.keyboard import Key
+                    k = getattr(Key, key, key)
+                    k_ctrl.release(k)
             elif t == "type_text":
-                text = ev.get("text","")
+                text = ev.get("text", "")
                 if text:
                     try:
                         import pyperclip
                         pyperclip.copy(text)
-                        pag.hotkey("ctrl","v", _pause=False)
+                        # Use hotkey for paste to be fast and handle unicode
+                        from pynput.keyboard import Key
+                        with k_ctrl.pressed(Key.ctrl):
+                            k_ctrl.press('v')
+                            k_ctrl.release('v')
                     except ImportError:
-                        pag.typewrite(text, interval=0.015, _pause=False)
+                        k_ctrl.type(text)
         except Exception as e:
             logger.warning(f"exec_input [{ev.get('type')}]: {e}")
 
@@ -298,39 +317,44 @@ class RemoteLinkServer:
         except ImportError:
             logger.error("pip install mss Pillow")
             self._placeholder_loop(conn, sid); return
-
+        
         try:
             sct = mss.mss()
         except Exception as e:
             logger.error(f"mss init: {e}")
             self._placeholder_loop(conn, sid); return
-
+        
         mon = sct.monitors[1]
         logger.info(f"Capturando monitor: {mon}")
         err_ts = 0
-
+        
+        # Pre-allocate buffer to reduce allocations
+        buf = io.BytesIO()
+        
         while self._running and self._session_id == sid:
             t0 = time.perf_counter()
             try:
                 raw  = sct.grab(mon)
+                # Optimized conversion: BGRA -> RGB
                 img  = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
                 w, h = img.size
-
-                # Escala apenas se necessário (mantém qualidade máxima)
-                if w > 2560:
-                    img = img.resize((2560, int(h*2560/w)), Image.LANCZOS)
-
-                # JPEG quality 80 — bom balanço nitidez × banda
-                # subsampling=0 = 4:4:4 (mais nítido, sem artefatos de cor)
-                buf = io.BytesIO()
-                img.save(buf, "JPEG", quality=80,
-                         subsampling=0, optimize=False)
+                
+                # Adaptive scaling: avoid overkill resolutions
+                if w > 1920:
+                    scale = 1920 / w
+                    img = img.resize((1920, int(h * scale)), Image.BILINEAR)
+                
+                buf.seek(0)
+                buf.truncate(0)
+                # Quality 70 is often indistinguishable from 80 but much smaller
+                # subsampling=0 (4:4:4) is critical for text clarity
+                img.save(buf, "JPEG", quality=70, subsampling=0, optimize=False)
                 frame = buf.getvalue()
-
+                
                 ts  = int(time.time()*1000) & 0xFFFFFFFF
                 hdr = struct.pack(">BII", 0x01, len(frame), ts)
                 conn.sendall(hdr + frame)
-
+                
             except (BrokenPipeError, ConnectionResetError, OSError):
                 break
             except Exception as e:
@@ -339,8 +363,10 @@ class RemoteLinkServer:
                     logger.warning(f"capture: {e}")
                     err_ts = now
                 time.sleep(0.05); continue
-
-            wait = FRAME_TIME - (time.perf_counter() - t0)
+            
+            # Precise timing loop
+            elapsed = time.perf_counter() - t0
+            wait = FRAME_TIME - elapsed
             if wait > 0:
                 time.sleep(wait)
 
@@ -365,11 +391,14 @@ class RemoteLinkServer:
     # ── Info / Wire ───────────────────────────────────────────────────────
 
     def _host_info(self):
+        from core.identity import get_local_ip, get_all_local_ips
         return {
             "hostname":         socket.gethostname(),
             "platform":         platform.system(),
             "platform_version": platform.version()[:40],
             "machine":          platform.machine(),
+            "local_ip":         get_local_ip(),
+            "all_ips":          get_all_local_ips(),
         }
 
     def _send_msg(self, conn, data: bytes):

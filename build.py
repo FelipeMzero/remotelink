@@ -34,14 +34,14 @@ VERSION = "1.0.0"
 # ── Terminal colors ────────────────────────────────────────────────────────────
 
 def _supports_color():
-    return sys.stdout.isatty() and platform.system() != "Windows" or \
-           os.environ.get("TERM") == "xterm"
+    return sys.stdout.isatty() and (platform.system() != "Windows" or
+           os.environ.get("TERM") == "xterm")
 
-def ok(msg):   print(f"  \033[32m✓\033[0m  {msg}" if _supports_color() else f"  [OK]  {msg}")
-def info(msg): print(f"  \033[34m→\033[0m  {msg}" if _supports_color() else f"  [>>]  {msg}")
-def warn(msg): print(f"  \033[33m!\033[0m  {msg}" if _supports_color() else f"  [!!]  {msg}")
-def err(msg):  print(f"  \033[31m✗\033[0m  {msg}" if _supports_color() else f"  [XX]  {msg}")
-def sep():     print("  " + "─" * 56)
+def ok(msg):   print(f"  [OK] {msg}")
+def info(msg): print(f"  [>>] {msg}")
+def warn(msg): print(f"  [!!] {msg}")
+def err(msg):  print(f"  [XX] {msg}")
+def sep():     print("  " + "-" * 56)
 
 
 # ── Dependency checks ──────────────────────────────────────────────────────────
@@ -384,23 +384,23 @@ VSVersionInfo(
 def _print_distribution_guide(exe_path: str):
     sep()
     print(f"""
-  📦 COMO DISTRIBUIR
-
+  COMO DISTRIBUIR
+ 
   O arquivo {os.path.basename(exe_path)} é completamente standalone.
   Inclui o Python {sys.version.split()[0]} e todas as dependências embutidas.
-
+ 
   Portas necessárias: 52340 (frames) e 52341 (input)
   Libere ambas no firewall!
-
+ 
   Para distribuir:
     1. Copie apenas o arquivo  RemoteLink.exe
     2. Cole em qualquer Windows 10/11 — sem instalar nada
     3. Execute diretamente
-
-  ⚠  Na primeira execução o Windows Defender pode alertar
-     (arquivo novo, sem assinatura digital). O usuário pode
-     clicar em "Mais informações → Executar assim mesmo".
-
+ 
+  Atenção: Na primeira execução o Windows Defender pode alertar
+      (arquivo novo, sem assinatura digital). O usuário pode
+      clicar em "Mais informações -> Executar assim mesmo".
+ 
   Para assinar digitalmente (remove o alerta):
     signtool sign /fd SHA256 /t http://timestamp.digicert.com RemoteLink.exe
 """)
@@ -409,14 +409,14 @@ def _print_distribution_guide(exe_path: str):
 def _print_onedir_guide(dist_dir: str):
     sep()
     print(f"""
-  📦 COMO DISTRIBUIR (modo onedir)
-
+  COMO DISTRIBUIR (modo onedir)
+ 
   A pasta  {os.path.basename(dist_dir)}/  contém o executável e todas as DLLs.
   Compacte-a em .zip para distribuir:
-
+ 
     Windows:  Compress-Archive -Path dist\\RemoteLink -DestinationPath RemoteLink.zip
     Linux:    zip -r RemoteLink.zip dist/RemoteLink/
-
+ 
   O usuário extrai o .zip e executa RemoteLink.exe diretamente.
   Não precisa instalar Python.
 """)
@@ -445,12 +445,8 @@ Exemplos:
     parser.add_argument("--version", action="version", version=f"RemoteLink {VERSION}")
     args = parser.parse_args()
 
-    print()
-    print("  ╔══════════════════════════════════════════════════════╗")
-    print(f"  ║          RemoteLink Builder  v{VERSION:<24}  ║")
-    print(f"  ║          Python {sys.version.split()[0]:<8}  PyInstaller build         ║")
-    print("  ╚══════════════════════════════════════════════════════╝")
-    print()
+    print("\n  RemoteLink Builder")
+    print(f"  Python {sys.version.split()[0]}  PyInstaller build\n")
 
     if args.clean:
         clean()

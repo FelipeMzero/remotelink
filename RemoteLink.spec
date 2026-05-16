@@ -46,6 +46,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    version='c:\\Users\\Felipe Monteiro\\Documents\\anypy\\build\\version_info.txt',
-    icon=['c:\\Users\\Felipe Monteiro\\Documents\\anypy\\assets\\icon.ico'],
+    version='d:\\C\\anypy\\build\\version_info.txt',
+    icon=['d:\\C\\anypy\\assets\\icon.ico'],
 )

@@ -24,8 +24,10 @@ CONNECT_TIMEOUT = 8.0
 PROBE_TIMEOUT   = 3.0
 
 
+import re
+
 def normalize_code(code: str) -> str:
-    return code.strip().upper().replace(" ", "")
+    return re.sub(r'[^0-9]', '', code)
 
 
 # ── Probe ─────────────────────────────────────────────────────────────────────
@@ -139,6 +141,8 @@ class RemoteLinkClient:
             # ── Canal de frames ────────────────────────────────────────────
             fsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             fsock.settimeout(CONNECT_TIMEOUT)
+            fsock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            fsock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
             fsock.connect((ip, port))
 
             hello = json.dumps({
@@ -239,21 +243,32 @@ class RemoteLinkClient:
     def send_mouse_move(self, x, y):
         self._send_input({"type": "mouse_move", "x": x, "y": y})
 
-    def send_mouse_click(self, x, y, button="left"):
-        self._send_input({"type": "mouse_click", "x": x, "y": y, "button": button})
-
+    def send_mouse_click(self, x, y, button="left", state="down"):
+        self._send_input({"type": "mouse_click", "x": x, "y": y, "button": button, "state": state})
+    
     def send_mouse_dblclick(self, x, y):
-        self._send_input({"type": "mouse_dblclick", "x": x, "y": y})
-
+        # Dblclick is now two clicks
+        self.send_mouse_click(x, y, "left", "down")
+        self.send_mouse_click(x, y, "left", "up")
+        self.send_mouse_click(x, y, "left", "down")
+        self.send_mouse_click(x, y, "left", "up")
+    
     def send_mouse_scroll(self, x, y, delta):
         self._send_input({"type": "mouse_scroll", "x": x, "y": y, "delta": delta})
-
-    def send_key_press(self, key: str):
-        self._send_input({"type": "key_press", "key": key})
-
+    
+    def send_key_down(self, key: str):
+        self._send_input({"type": "key_down", "key": key})
+    
+    def send_key_up(self, key: str):
+        self._send_input({"type": "key_up", "key": key})
+    
     def send_hotkey(self, *keys):
-        self._send_input({"type": "key_hotkey", "keys": list(keys)})
-
+        # Hotkey is now a sequence of down/up
+        for k in keys:
+            self.send_key_down(k)
+        for k in reversed(keys):
+            self.send_key_up(k)
+    
     def send_text(self, text: str):
         self._send_input({"type": "type_text", "text": text})
 

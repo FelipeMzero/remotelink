@@ -11,6 +11,7 @@ mss>=9.0.1
 Pillow>=10.0.0
 
 # Input automation (host side)
+pynput>=1.7.6
 pyautogui>=0.9.54
 
 # Optional: better performance
