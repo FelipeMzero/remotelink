@@ -1,6 +1,8 @@
 """
 RemoteLink - GUI Application
 Dark theme - profissional e moderna
+Suporte a Rede Externa (WAN / UPnP / Cloud Rendezvous / Código Externo / Conexão Reversa)
+e Controle Direto de Teclado e Mouse estilo AnyDesk (Hook Win32 WH_KEYBOARD_LL + Drag & Drop).
 """
 
 import tkinter as tk
@@ -10,54 +12,103 @@ import time
 import sys
 import os
 import io
+import platform
+import ctypes
 import logging
 from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.identity import get_machine_info, resolve_target, NetworkScanner, is_local_target, is_own_code
-from core.client import RemoteLinkClient, probe_target, probe_hostname, resolve_hostname_to_ips
+from core.identity import (
+    get_machine_info, resolve_target, NetworkScanner,
+    is_local_target, is_own_code, get_public_ip,
+    encode_external_code, CloudRegistry, CANDIDATE_OPEN_PORTS
+)
+from core.client import (
+    RemoteLinkClient, probe_target, probe_any_port,
+    probe_hostname, resolve_hostname_to_ips
+)
 from core.server import RemoteLinkServer
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("remotelink.gui")
 
-# ── Dark Theme ─────────────────────────────────────────────────────────────────
+_IS_WIN = platform.system() == "Windows"
+
+if _IS_WIN:
+    from ctypes import wintypes
+    _user32 = ctypes.windll.user32
+    _LRESULT = ctypes.c_ssize_t
+    _HHOOK = wintypes.HANDLE
+    _ULONG_PTR = ctypes.c_size_t
+
+    class _KBDLLHOOKSTRUCT(ctypes.Structure):
+        _fields_ = [
+            ("vkCode",      wintypes.DWORD),
+            ("scanCode",    wintypes.DWORD),
+            ("flags",       wintypes.DWORD),
+            ("time",        wintypes.DWORD),
+            ("dwExtraInfo", _ULONG_PTR),
+        ]
+
+    _HOOKPROC = ctypes.WINFUNCTYPE(_LRESULT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+    _user32.SetWindowsHookExW.argtypes = [ctypes.c_int, _HOOKPROC, wintypes.HINSTANCE, wintypes.DWORD]
+    _user32.SetWindowsHookExW.restype = _HHOOK
+    _user32.CallNextHookEx.argtypes = [_HHOOK, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM]
+    _user32.CallNextHookEx.restype = _LRESULT
+    _user32.UnhookWindowsHookEx.argtypes = [_HHOOK]
+    _user32.UnhookWindowsHookEx.restype = wintypes.BOOL
+    _user32.GetForegroundWindow.argtypes = []
+    _user32.GetForegroundWindow.restype = wintypes.HWND
+    _user32.IsChild.argtypes = [wintypes.HWND, wintypes.HWND]
+    _user32.IsChild.restype = wintypes.BOOL
+    _user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+    _user32.GetAncestor.restype = wintypes.HWND
+
+    WH_KEYBOARD_LL = 13
+    WM_KEYDOWN     = 0x0100
+    WM_KEYUP       = 0x0101
+    WM_SYSKEYDOWN  = 0x0104
+    WM_SYSKEYUP    = 0x0105
+    GA_ROOT        = 2
+
+
+# ── Cyber-Slate Dark Theme (Overhaul) ─────────────────────────────────────────
 C = {
-    "bg_dark":       "#0d1117",
-    "bg_surface":    "#161b22",
-    "bg_card":       "#1c2333",
-    "bg_alt":        "#21262d",
-    "bg_input":      "#0d1117",
-    "border":        "#30363d",
-    "border_focus":  "#58a6ff",
-    "accent":        "#58a6ff",
-    "accent_hover":  "#79c0ff",
-    "accent_muted":  "#1f3a5f",
-    "success":       "#3fb950",
-    "success_bg":    "#1b3624",
-    "warning":       "#d29922",
-    "warning_bg":    "#2d2416",
-    "error":         "#f85149",
-    "error_bg":      "#2d1b1b",
-    "error_hover":   "#da3a33",
-    "text":          "#e6edf3",
-    "text_secondary":"#8b949e",
-    "text_disabled": "#484f58",
-    "text_caption":  "#6e7681",
+    "bg_dark":       "#080c14",
+    "bg_surface":    "#0d131f",
+    "bg_card":       "#131c2e",
+    "bg_alt":        "#1b263b",
+    "bg_input":      "#090e17",
+    "border":        "#23314d",
+    "border_focus":  "#3b82f6",
+    "accent":        "#3b82f6",
+    "accent_hover":  "#60a5fa",
+    "accent_muted":  "#172a4a",
+    "success":       "#10b981",
+    "success_bg":    "#0d2e24",
+    "warning":       "#f59e0b",
+    "warning_bg":    "#31230b",
+    "error":         "#ef4444",
+    "error_bg":      "#321418",
+    "error_hover":   "#dc2626",
+    "text":          "#f1f5f9",
+    "text_secondary":"#94a3b8",
+    "text_disabled": "#475569",
+    "text_caption":  "#64748b",
     "text_on_accent":"#ffffff",
-    "nav_bg":        "#111820",
-    "nav_hover":     "#1c2333",
-    "nav_active":    "#161b22",
-    "nav_active_bar":"#58a6ff",
-    "ctrl_hover":    "#292e36",
-    "scroll_bg":     "#161b22",
-    "scroll_fg":     "#30363d",
-    "scroll_hover":  "#484f58",
-    "code_bg":       "#161b22",
-    "code_text":     "#79c0ff",
-    "progress_bg":   "#21262d",
-    "progress_fg":   "#58a6ff",
+    "nav_bg":        "#090e17",
+    "nav_hover":     "#131c2e",
+    "nav_active":    "#17253d",
+    "nav_active_bar":"#3b82f6",
+    "ctrl_hover":    "#24324d",
+    "scroll_bg":     "#0d131f",
+    "scroll_fg":     "#23314d",
+    "scroll_hover":  "#3b82f6",
+    "code_bg":       "#090e17",
+    "code_text":     "#60a5fa",
+    "progress_bg":   "#1b263b",
+    "progress_fg":   "#3b82f6",
 }
 
 # ── Fonts ─────────────────────────────────────────────────────────────────────
@@ -191,7 +242,7 @@ class SectionHeader(tk.Frame):
         if subtitle:
             tk.Label(self, text=subtitle, font=FONT_UI_SM,
                      bg=bg, fg=C["text_secondary"],
-                     wraplength=500, justify="left").pack(anchor="w", pady=(2, 0))
+                     wraplength=560, justify="left").pack(anchor="w", pady=(2, 0))
 
 
 class FlatBtn(tk.Button):
@@ -270,7 +321,7 @@ class StatusDot(tk.Frame):
         }
         texts = {
             "online": "Online", "connected": "Conectado",
-            "listening": "Aguardando conexoes", "connecting": "Conectando...",
+            "listening": "Aguardando conexoes (LAN e Rede Externa)", "connecting": "Conectando...",
             "disconnected": "Desconectado", "error": "Erro", "stopped": "Parado",
         }
         color = colors.get(status, C["text_disabled"])
@@ -371,7 +422,7 @@ class ConnectionPreview(tk.Frame):
         self._spin = tk.Label(self._load_f, text="\u25cc",
             font=_f(_UI_FAMS, 20), bg=C["bg_card"], fg=C["accent"])
         self._spin.pack(side="left", padx=(0, 10))
-        self._spin_txt = tk.Label(self._load_f, text="Verificando na rede...",
+        self._spin_txt = tk.Label(self._load_f, text="Verificando na rede local e externa...",
             font=FONT_UI, bg=C["bg_card"], fg=C["text_secondary"])
         self._spin_txt.pack(side="left")
 
@@ -438,12 +489,18 @@ class ConnectionPreview(tk.Frame):
         if info.get("platform_version"):
             plat += f" {info['platform_version'][:35]}"
 
-        methods = {"ip":"IP Direto","hostname":"Hostname / DNS",
-                   "access_code":"Codigo de Acesso","scan":"Descoberta Local"}
+        methods = {
+            "ip": "IP Direto (LAN)",
+            "external_ip": "IP Externo (WAN)",
+            "external_code": "Codigo Externo (WAN)",
+            "hostname": "Hostname / DDNS",
+            "access_code": "Codigo de Acesso (LAN / Nuvem)",
+            "scan": "Descoberta Local",
+        }
 
         self._host_lbl.config(text=hostname)
         self._plat_lbl.config(text=plat or "Sistema Remoto")
-        self._dvals["ip"].config(text=info.get("ip") or info.get("local_ip") or "\u2014")
+        self._dvals["ip"].config(text=info.get("ip") or info.get("public_ip") or info.get("local_ip") or "\u2014")
         self._dvals["hostname"].config(text=hostname)
         self._dvals["platform"].config(text=plat or "\u2014")
         self._dvals["method"].config(
@@ -453,15 +510,15 @@ class ConnectionPreview(tk.Frame):
             w.destroy()
 
         if reachable:
-            self._title.config(text="Maquina encontrada - pronta para conectar")
-            Badge(self._badge_f, "Online", "success").pack()
+            self._title.config(text="Maquina pronta para conectar")
+            Badge(self._badge_f, "Pronto", "success").pack()
             self._conn_btn.config(bg=C["accent"], state="normal",
                                   text="Conectar")
         else:
-            self._title.config(text="Maquina nao alcancavel")
-            Badge(self._badge_f, "Offline", "error").pack()
-            self._conn_btn.config(bg=C["text_disabled"], state="disabled",
-                                  text="Inacessivel")
+            self._title.config(text="Maquina nao respondeu ao probe direto (voce ainda pode tentar conectar)")
+            Badge(self._badge_f, "Tentar Conexao", "warning").pack()
+            self._conn_btn.config(bg=C["accent"], state="normal",
+                                  text="Tentar Conectar")
 
     def hide(self):
         if self._aid:
@@ -485,7 +542,7 @@ class ConnectionPreview(tk.Frame):
 # ── Connect Page ───────────────────────────────────────────────────────────────
 
 class ConnectPage(tk.Frame):
-    _PH = "Codigo, IP ou Hostname - ex: 123-456"
+    _PH = "Digite Código (750-789), Token Externo (RL-...), CODIGO@IP ou IP"
 
     def __init__(self, parent, on_connect_request, **kw):
         kw.setdefault("bg", C["bg_surface"])
@@ -509,72 +566,92 @@ class ConnectPage(tk.Frame):
             int(-1*(e.delta/120)), "units"))
 
         pad = tk.Frame(sf, bg=C["bg_surface"])
-        pad.pack(fill="both", expand=True, padx=32, pady=28)
+        pad.pack(fill="both", expand=True, padx=28, pady=22)
 
         SectionHeader(pad,
-            title="Conectar a um computador remoto",
-            subtitle="Digite o codigo de acesso, hostname ou IP do computador que deseja controlar",
-        ).pack(anchor="w", pady=(0, 20))
+            title="Acesso Remoto Direto (Rede Local, VPN e Rede Externa)",
+            subtitle="Ao clicar em 'Conectar Agora', a tela remota abre imediatamente com controle direto de mouse e teclado (estilo AnyDesk).",
+        ).pack(anchor="w", pady=(0, 16))
 
-        # ── Input card ────────────────────────────────────────────────────
+        # ── Hero Input Card ───────────────────────────────────────────────
         ic = CardFrame(pad, padding=20)
-        ic.pack(fill="x", pady=(0, 4))
+        ic.pack(fill="x", pady=(0, 6))
 
-        tk.Label(ic.inner, text="Endereco do computador",
+        top_lbl_row = tk.Frame(ic.inner, bg=C["bg_card"])
+        top_lbl_row.pack(fill="x", pady=(0, 8))
+        tk.Label(top_lbl_row, text="Endereço ou Código da Máquina Remota",
                  font=FONT_UI_BODY_B, bg=C["bg_card"],
-                 fg=C["text"]).pack(anchor="w", pady=(0, 8))
+                 fg=C["text"]).pack(side="left")
+        Badge(top_lbl_row, "Multi-Portas + Relay NAT Automático", "info").pack(side="right")
 
         row = tk.Frame(ic.inner, bg=C["bg_card"])
-        row.pack(fill="x", pady=(0, 10))
+        row.pack(fill="x", pady=(0, 12))
 
         self._ewrap = tk.Frame(row, bg=C["bg_input"],
                                highlightbackground=C["border"],
-                               highlightthickness=1)
+                               highlightthickness=2)
         self._ewrap.pack(side="left", fill="x", expand=True)
 
         self._var = tk.StringVar()
         self._entry = tk.Entry(self._ewrap, textvariable=self._var,
             font=FONT_MONO_LG, bg=C["bg_input"], fg=C["text_caption"],
             insertbackground=C["text"], relief="flat", borderwidth=0)
-        self._entry.pack(fill="x", padx=12, pady=9)
+        self._entry.pack(fill="x", padx=14, pady=10)
         self._entry.insert(0, self._PH)
         self._entry.bind("<FocusIn>",  self._fi)
         self._entry.bind("<FocusOut>", self._fo)
-        self._entry.bind("<Return>",   lambda e: self._verify())
+        self._entry.bind("<Return>",   lambda e: self._connect_now())
 
-        self._vbtn = FlatBtn(row, text="Verificar",
-                              variant="accent", command=self._verify)
-        self._vbtn.config(font=FONT_UI_BODY_B)
-        self._vbtn.pack(side="left", padx=(8, 0))
+        FlatBtn(row, text="Colar", variant="default",
+                command=self._paste_clipboard).pack(side="left", padx=(8, 0))
+
+        self._cbtn = FlatBtn(row, text="Conectar Agora",
+                             variant="accent", command=self._connect_now)
+        self._cbtn.config(font=FONT_UI_BODY_B, padx=20, pady=9)
+        self._cbtn.pack(side="left", padx=(8, 0))
+
+        self._vbtn = FlatBtn(row, text="Inspecionar",
+                             variant="default", command=self._verify)
+        self._vbtn.pack(side="left", padx=(6, 0))
 
         # Format chips
         chips = tk.Frame(ic.inner, bg=C["bg_card"])
         chips.pack(anchor="w")
-        for lbl, ex in [("Codigo:","123-456"),("IP:","192.168.1.50"),
-                        ("Hostname:","SERVIDOR01")]:
+        for lbl, ex in [
+            ("Código (LAN/WAN Relay):", "750-789"),
+            ("Token Externo:", "RL-XXXX-XXXX-XXXX"),
+            ("Código + IP:", "750-789@IP_EXTERNO"),
+            ("IP / Porta aberta:", "IP:7070 ou IP:52340"),
+        ]:
             r = tk.Frame(chips, bg=C["bg_card"])
-            r.pack(side="left", padx=(0, 18))
+            r.pack(side="left", padx=(0, 14))
             tk.Label(r, text=lbl, font=FONT_UI_SM, bg=C["bg_card"],
                      fg=C["text_caption"]).pack(side="left")
             tk.Label(r, text=f" {ex}", font=FONT_MONO, bg=C["bg_card"],
-                     fg=C["text_secondary"]).pack(side="left")
+                     fg=C["code_text"]).pack(side="left")
 
-        # Preview
+        # Preview card (sempre empacotado ANTES da seção de scan!)
         self._preview = ConnectionPreview(pad)
         self._preview.pack_forget()
 
         # ── Scan section ──────────────────────────────────────────────────
-        scan_hdr = tk.Frame(pad, bg=C["bg_surface"])
-        scan_hdr.pack(fill="x", pady=(22, 8))
+        self._scan_hdr = tk.Frame(pad, bg=C["bg_surface"])
+        self._scan_hdr.pack(fill="x", pady=(18, 8))
 
-        SectionHeader(scan_hdr,
-            title="Computadores na rede local",
-            subtitle="Maquinas com RemoteLink detectadas automaticamente",
+        SectionHeader(self._scan_hdr,
+            title="Computadores Descobertos na Rede (LAN / VPN)",
+            subtitle="Dê duplo-clique em qualquer máquina abaixo para abrir a tela remota imediatamente",
             bg=C["bg_surface"]).pack(side="left", anchor="w")
 
-        self._scan_btn = FlatBtn(scan_hdr, text="Escanearede",
+        btn_bar = tk.Frame(self._scan_hdr, bg=C["bg_surface"])
+        btn_bar.pack(side="right", anchor="center")
+
+        FlatBtn(btn_bar, text="Conectar Selecionado",
+                variant="accent", command=self._tree_dbl).pack(side="right", padx=(8, 0))
+
+        self._scan_btn = FlatBtn(btn_bar, text="Escanear Rede",
                                   variant="default", command=self._scan)
-        self._scan_btn.pack(side="right", anchor="center")
+        self._scan_btn.pack(side="right")
 
         self._prog = ttk.Progressbar(pad, mode="determinate",
                                       style="Horizontal.TProgressbar")
@@ -586,8 +663,8 @@ class ConnectPage(tk.Frame):
         cols = ("host","ip","method","status")
         self._tree = ttk.Treeview(tc.inner, columns=cols, show="headings",
                                    height=6, selectmode="browse")
-        for col, head, w in [("host","Hostname",210),("ip","IP",140),
-                              ("method","Metodo",130),("status","Status",90)]:
+        for col, head, w in [("host","Hostname",220),("ip","Endereço IP",150),
+                              ("method","Rede / Porta",150),("status","Status",100)]:
             self._tree.heading(col, text=head)
             self._tree.column(col, width=w, minwidth=70)
         vsb2 = ttk.Scrollbar(tc.inner, orient="vertical",
@@ -597,7 +674,17 @@ class ConnectPage(tk.Frame):
         vsb2.pack(side="right", fill="y")
         self._tree.bind("<Double-1>", self._tree_dbl)
         self._tree.insert("","end",
-            values=("Clique em 'Escanearede' para buscar computadores","","",""))
+            values=("Clique em 'Escanear Rede' para listar computadores ativos na LAN/VPN","","",""))
+
+    def _paste_clipboard(self):
+        try:
+            txt = self.winfo_toplevel().clipboard_get().strip()
+            if txt:
+                self._entry.delete(0, "end")
+                self._entry.insert(0, txt)
+                self._entry.config(fg=C["text"])
+        except Exception:
+            pass
 
     def _fi(self, e):
         if self._entry.get() == self._PH:
@@ -611,54 +698,117 @@ class ConnectPage(tk.Frame):
             self._entry.config(fg=C["text_caption"])
         self._ewrap.config(highlightbackground=C["border"])
 
-    def _verify(self):
+    def _parse_and_validate(self) -> Optional[dict]:
         t = self._var.get().strip()
         if not t or t == self._PH:
-            return
+            messagebox.showwarning("Campo Vazio", "Digite o Código (ex: 750-789), Token Externo (RL-...) ou IP do computador remoto.")
+            return None
         resolved = resolve_target(t)
         if not resolved:
-            messagebox.showerror("Erro", "Formato invalido. Use codigo XXX-XXX, IP ou hostname.")
-            return
-        # Impede conexao com a propria maquina
-        if resolved["method"] == "access_code":
-            if is_own_code(resolved.get("code", "")):
-                messagebox.showerror("Restricao", "Voce nao pode se conectar ao seu proprio codigo de acesso.")
-                self._preview.pack_forget()
-                return
-        elif resolved["method"] in ("ip", "hostname"):
-            target_check = resolved.get("ip") or resolved.get("hostname") or t
-            if is_local_target(target_check):
-                messagebox.showerror("Restricao", "Nao e possivel conectar a si mesmo.\n\nUse o codigo ou IP de outro computador.")
-                self._preview.pack_forget()
-                return
+            messagebox.showerror(
+                "Formato Inválido",
+                "Use um dos formatos:\n"
+                "• Código de 6 dígitos: 750-789\n"
+                "• Token Externo: RL-XXXX-XXXX-XXXX\n"
+                "• Código + IP: 750-789@177.128.182.40\n"
+                "• IP ou Hostname: 192.168.0.10 ou 177.128.182.40:7070"
+            )
+            return None
 
+        if resolved["method"] in ("access_code", "external_code"):
+            if is_own_code(resolved.get("code", "")):
+                messagebox.showerror("Restrição", "Você não pode conectar ao seu próprio código de acesso.")
+                return None
+        if resolved.get("ip") and is_local_target(resolved["ip"]):
+            messagebox.showerror("Restrição", "Não é possível conectar ao próprio computador.\nInforme o código ou IP de outra máquina.")
+            return None
+        return resolved
+
+    def _connect_now(self):
+        """Abre a tela remota (ViewerWindow) IMEDIATAMENTE e inicia a conexão."""
+        resolved = self._parse_and_validate()
+        if not resolved:
+            return
+        self._preview.hide()
+        if self._on_connect:
+            self._on_connect(resolved)
+
+    def _verify(self):
+        resolved = self._parse_and_validate()
+        if not resolved:
+            self._preview.pack_forget()
+            return
+
+        t = self._var.get().strip()
         self._preview.show_loading(t)
-        self._preview.pack(fill="x", pady=(0, 8))
+        # Empacota ANTES de _scan_hdr para ficar visível logo abaixo do input!
+        self._preview.pack(fill="x", pady=(6, 8), before=self._scan_hdr)
 
         def probe():
             method = resolved["method"]
+            port = resolved.get("port", 52340)
+
             if method == "access_code":
-                info = {"reachable": False, "ip": None,
+                code = resolved["code"]
+                cloud_info = CloudRegistry.lookup_code(code, timeout=3.0)
+                if cloud_info:
+                    info = {
+                        "reachable": True,
+                        "ip": cloud_info.get("public_ip") or cloud_info.get("local_ip"),
+                        "public_ip": cloud_info.get("public_ip"),
+                        "local_ip": cloud_info.get("local_ip"),
+                        "candidates": cloud_info.get("candidates", []),
+                        "open_ports": cloud_info.get("open_ports", []),
+                        "cloud_info": cloud_info,
                         "method": "access_code",
-                        "code": resolved["code"],
-                        "hostname": "Aguardando descoberta local...",
-                        "platform": ""}
-                info["reachable"] = True
-                info["status"] = "pending_scan"
+                        "code": code,
+                        "access_code": code,
+                        "port": cloud_info.get("port", port),
+                        "hostname": cloud_info.get("hostname", f"Remoto ({code})"),
+                        "platform": cloud_info.get("platform", ""),
+                        "platform_version": cloud_info.get("platform_version", ""),
+                        "status": "online",
+                    }
+                else:
+                    info = {
+                        "reachable": True,
+                        "ip": None,
+                        "method": "access_code",
+                        "code": code,
+                        "access_code": code,
+                        "port": port,
+                        "hostname": f"Computador {code[:3]}-{code[3:]} (via Relay Externo / LAN)",
+                        "platform": "Túnel Relay / Multi-Porta",
+                        "status": "pending_scan",
+                    }
+            elif method == "external_code":
+                ip = resolved.get("ip")
+                code = resolved.get("code", "")
+                if ip:
+                    info = probe_any_port(ip, ports=[port])
+                    info["method"] = "external_code"
+                    info["code"]   = code
+                    info["access_code"] = code
+                    info["ip"]     = ip
+                    info.setdefault("hostname", resolved.get("hostname") or ip)
+                else:
+                    info = {
+                        "reachable": True,
+                        "method": "external_code",
+                        "code": code,
+                        "access_code": code,
+                        "ip": None,
+                        "port": port,
+                        "hostname": resolved.get("hostname") or "Remoto",
+                    }
             elif method == "hostname" and not resolved.get("ip"):
-                info = probe_hostname(resolved["hostname"])
+                info = probe_hostname(resolved["hostname"], port=port)
                 info["method"] = "hostname"
-                if not info.get("ip"):
-                    info["reachable"] = False
-                    info["error"] = "Hostname nao encontrado na rede"
-            elif method == "hostname" and resolved.get("ip"):
-                info = probe_target(resolved["ip"])
-                info["method"] = "hostname"
-                info["hostname"] = resolved.get("hostname") or info.get("hostname")
             else:
-                info = probe_target(resolved["ip"])
-                info["method"] = "ip"
-                info["hostname"] = resolved.get("hostname") or info.get("hostname") or resolved["ip"]
+                ip = resolved.get("ip")
+                info = probe_any_port(ip, ports=[port])
+                info["method"] = method
+                info["hostname"] = resolved.get("hostname") or info.get("hostname") or ip
 
             self.after(0, lambda: self._preview.show_result(
                 info, connect_callback=self._on_connect))
@@ -672,16 +822,17 @@ class ConnectPage(tk.Frame):
             self._active_scanner.stop()
 
         self._scan_btn.config(state="disabled", text="Escaneando...")
-        self._prog.pack(fill="x", pady=(0, 6))
+        self._prog.pack(fill="x", pady=(0, 6), before=self._tree.master.master)
         self._prog["value"] = 0
         for i in self._tree.get_children():
             self._tree.delete(i)
 
         def on_found(machine):
+            p = machine.get("port", 52340)
             self.after(0, lambda m=machine: self._tree.insert(
                 "", "end",
                 values=(m.get("hostname","\u2014"), m.get("ip","\u2014"),
-                        "Rede Local", "Online"),
+                        f"TCP :{p}", "Online"),
                 tags=(m.get("ip",""),)
             ))
 
@@ -701,22 +852,22 @@ class ConnectPage(tk.Frame):
         self._active_scanner.start()
 
     def _scan_finished(self, found):
-        self._scan_btn.config(state="normal", text="Escanearede")
+        self._scan_btn.config(state="normal", text="Escanear Rede")
         self._prog.pack_forget()
         if not found and not self._tree.get_children():
             self._tree.insert("", "end",
-                values=("Nenhum computador RemoteLink encontrado na rede","","",""))
+                values=("Nenhum computador encontrado na LAN — use o Código ou Token Externo acima","","",""))
 
-    def _tree_dbl(self, e):
+    def _tree_dbl(self, e=None):
         sel = self._tree.selection()
         if not sel:
             return
         vals = self._tree.item(sel[0], "values")
         if vals and vals[1]:
-            self._entry.delete(0,"end")
+            self._entry.delete(0, "end")
             self._entry.insert(0, vals[1])
             self._entry.config(fg=C["text"])
-            self._verify()
+            self._connect_now()
 
 
 # ── Share Page ─────────────────────────────────────────────────────────────────
@@ -732,37 +883,45 @@ class SharePage(tk.Frame):
 
     def _build(self):
         pad = tk.Frame(self, bg=C["bg_surface"])
-        pad.pack(fill="both", expand=True, padx=32, pady=28)
+        pad.pack(fill="both", expand=True, padx=28, pady=22)
 
         SectionHeader(pad,
-            title="Compartilhar esta tela",
-            subtitle="Permita que outro computador se conecte e controle esta maquina remotamente",
-        ).pack(anchor="w", pady=(0, 20))
+            title="Servidor Host & Diagnóstico de Rede Externa",
+            subtitle="O RemoteLink escuta simultaneamente em múltiplas portas abertas do sistema e mantém um túnel Relay Externo ativo contra CGNAT.",
+        ).pack(anchor="w", pady=(0, 16))
 
         # Control card
-        cc = CardFrame(pad, padding=20)
-        cc.pack(fill="x", pady=(0, 16))
+        cc = CardFrame(pad, padding=18)
+        cc.pack(fill="x", pady=(0, 14))
 
-        self._srv_dot = StatusDot(cc.inner, bg=C["bg_card"])
-        self._srv_dot.pack(anchor="w", pady=(0, 14))
+        top_r = tk.Frame(cc.inner, bg=C["bg_card"])
+        top_r.pack(fill="x", pady=(0, 10))
+
+        self._srv_dot = StatusDot(top_r, bg=C["bg_card"])
+        self._srv_dot.pack(side="left")
         self._srv_dot.set("stopped")
 
-        self._toggle = FlatBtn(cc.inner, text="Iniciar servidor",
+        self._toggle = FlatBtn(top_r, text="Iniciar Servidor",
                                 variant="success", command=self._do_toggle)
         self._toggle.config(font=FONT_UI_BODY_B)
-        self._toggle.pack(anchor="w", pady=(0, 14))
+        self._toggle.pack(side="right")
 
-        Divider(cc.inner).pack(fill="x", pady=(0, 10))
+        self._ports_lbl = tk.Label(cc.inner,
+            text=f"Portas candidatas: {', '.join(str(p) for p in CANDIDATE_OPEN_PORTS)}",
+            font=FONT_MONO, bg=C["bg_card"], fg=C["code_text"], anchor="w")
+        self._ports_lbl.pack(fill="x", pady=(0, 8))
+
+        Divider(cc.inner).pack(fill="x", pady=(0, 8))
 
         tk.Label(cc.inner,
-            text="Ao iniciar, qualquer pessoa com seu codigo de acesso pode visualizar\n"
-                 "e controlar esta tela. Pare o servidor quando nao estiver em uso.",
+            text="• Multiplexação em Porta Única: vídeo e comandos de mouse/teclado trafegam na mesma porta TCP.\n"
+                 "• Relay Externo Automático: permite conexão pelo código XXX-XXX mesmo sem abrir portas no roteador.",
             font=FONT_UI_SM, bg=C["bg_card"], fg=C["text_secondary"],
-            justify="left", wraplength=480).pack(anchor="w")
+            justify="left").pack(anchor="w")
 
         # Log
-        SectionHeader(pad, title="Registro de conexoes",
-                      bg=C["bg_surface"]).pack(anchor="w", pady=(20, 8))
+        SectionHeader(pad, title="Log em Tempo Real (Portas, UPnP, STUN e Relay)",
+                      bg=C["bg_surface"]).pack(anchor="w", pady=(10, 6))
 
         lc = CardFrame(pad, padding=0)
         lc.pack(fill="both", expand=True)
@@ -775,36 +934,41 @@ class SharePage(tk.Frame):
         self._log.configure(yscrollcommand=lvsb.set)
         self._log.pack(side="left", fill="both", expand=True)
         lvsb.pack(side="right", fill="y")
-        self._write("Sistema pronto. Use o botao acima para iniciar o servidor.")
+        self._write("Sistema pronto. O servidor multi-portas iniciará automaticamente.")
 
     def _do_toggle(self):
         if not self._running:
             self.server.start()
             self._running = True
-            self._toggle.config(text="Parar servidor",
+            ports_str = ", ".join(str(p) for p in (self.server.listening_ports or [52340]))
+            self._toggle.config(text="Parar Servidor",
                                 bg=C["error"], activebackground=C["error_hover"])
-            self._srv_dot.set("listening", "Aguardando conexoes na porta 52340")
-            self._write("Servidor iniciado - porta 52340")
+            self._srv_dot.set("listening", f"Ativo nas portas [{ports_str}] + Relay Externo")
+            self._ports_lbl.config(text=f"Portas abertas escutando neste PC: {ports_str}")
+            self._write(f"Servidor iniciado — escutando nas portas [{ports_str}] + Relay Externo")
         else:
             self.server.stop()
             self._running = False
-            self._toggle.config(text="Iniciar servidor",
+            self._toggle.config(text="Iniciar Servidor",
                                 bg=C["success"], activebackground="#2ea043")
             self._srv_dot.set("stopped")
             self._write("Servidor parado")
 
     def on_client_connected(self, addr, info):
-        h = info.get("hostname", str(addr))
         self.after(0, lambda: (
-            self._srv_dot.set("connected", f"Conectado: {h}"),
-            self._write(f"Cliente conectado - {h} ({addr[0]})")
+            self._srv_dot.set("connected", f"Sessão ativa: {addr[0]}"),
+            self._write(f"Cliente conectado à tela — origem: {addr[0]}")
         ))
 
     def on_client_disconnected(self):
+        ports_str = ", ".join(str(p) for p in (self.server.listening_ports or [52340]))
         self.after(0, lambda: (
-            self._srv_dot.set("listening", "Aguardando conexoes na porta 52340"),
+            self._srv_dot.set("listening", f"Ativo nas portas [{ports_str}] + Relay Externo"),
             self._write("Cliente desconectado")
         ))
+
+    def log_network_event(self, msg: str):
+        self.after(0, lambda: self._write(msg))
 
     def _write(self, msg):
         ts = time.strftime("%H:%M:%S")
@@ -814,46 +978,33 @@ class SharePage(tk.Frame):
         self._log.config(state="disabled")
 
 
-# ── Machine Banner ─────────────────────────────────────────────────────────────
+# ── Machine Banner (Dashboard 3 Cards no Topo) ─────────────────────────────────
 
 class MachineBanner(tk.Frame):
     def __init__(self, parent, machine_info: dict, **kw):
-        super().__init__(parent, bg=C["bg_card"],
+        super().__init__(parent, bg=C["bg_dark"],
                          highlightbackground=C["border"],
                          highlightthickness=1, **kw)
         self._info = machine_info
+        self._ext_code = machine_info.get("external_code", "")
+        self._pub_ip = machine_info.get("public_ip", "")
         self._build()
 
     def _build(self):
-        inner = tk.Frame(self, bg=C["bg_card"])
-        inner.pack(fill="x", padx=24, pady=14)
+        inner = tk.Frame(self, bg=C["bg_dark"])
+        inner.pack(fill="x", padx=20, pady=12)
 
-        # Left: hostname + IP
-        left = tk.Frame(inner, bg=C["bg_card"])
-        left.pack(side="left", fill="y")
+        # Card 1: SEU CÓDIGO DE ACESSO
+        c1 = tk.Frame(inner, bg=C["bg_card"], highlightbackground=C["border"], highlightthickness=1)
+        c1.pack(side="left", fill="both", expand=True, padx=(0, 10))
+        c1_in = tk.Frame(c1, bg=C["bg_card"])
+        c1_in.pack(fill="both", expand=True, padx=14, pady=10)
 
-        tk.Label(left, text=self._info.get("hostname", "Este Computador"),
-                 font=FONT_UI_SUBH, bg=C["bg_card"],
-                 fg=C["text"]).pack(anchor="w")
-        ips_text = " | ".join(self._info.get("all_ips", []))
-        tk.Label(left,
-                 text=f"{self._info.get('platform','')}  |  {ips_text}",
-                 font=FONT_UI_SM, bg=C["bg_card"],
-                 fg=C["text_secondary"]).pack(anchor="w", pady=(2, 0))
+        tk.Label(c1_in, text="SEU CÓDIGO DE ACESSO (QUALQUER REDE)",
+                 font=FONT_UI_SM, bg=C["bg_card"], fg=C["text_caption"]).pack(anchor="w")
 
-        Divider(inner, vertical=True).pack(side="left", fill="y", padx=24, pady=4)
-
-        # Right: access code
-        right = tk.Frame(inner, bg=C["bg_card"])
-        right.pack(side="left", fill="y", expand=True)
-
-        tk.Label(right, text="Seu codigo de acesso",
-                 font=FONT_UI_SM, bg=C["bg_card"],
-                 fg=C["text_caption"]).pack(anchor="w")
-
-        code_row = tk.Frame(right, bg=C["bg_card"])
-        code_row.pack(anchor="w", pady=(4, 0))
-
+        code_row = tk.Frame(c1_in, bg=C["bg_card"])
+        code_row.pack(fill="x", pady=(2, 2))
         self._code = tk.Label(code_row,
             text=self._info.get("access_code", "---"),
             font=FONT_CODE_XL, bg=C["bg_card"],
@@ -861,14 +1012,73 @@ class MachineBanner(tk.Frame):
         self._code.pack(side="left")
         self._code.bind("<Button-1>", self._copy)
 
-        FlatBtn(code_row, text="Copiar",
-                variant="subtle", command=self._copy).pack(
-            side="left", padx=(10, 0), pady=(6, 0))
+        self._copy_btn = FlatBtn(code_row, text="Copiar Código",
+                                 variant="subtle", command=self._copy)
+        self._copy_btn.pack(side="right", pady=2)
 
-        # Status
-        self._status = StatusDot(right, bg=C["bg_card"])
-        self._status.pack(anchor="w", pady=(8, 0))
+        ips_text = " | ".join(self._info.get("all_ips", [])[:2])
+        tk.Label(c1_in,
+                 text=f"{self._info.get('hostname','PC')}  •  LAN/VPN: {ips_text}",
+                 font=FONT_UI_SM, bg=C["bg_card"], fg=C["text_secondary"]).pack(anchor="w")
+
+        # Card 2: REDE EXTERNA (WAN & TOKEN DIRETO)
+        c2 = tk.Frame(inner, bg=C["bg_card"], highlightbackground=C["border"], highlightthickness=1)
+        c2.pack(side="left", fill="both", expand=True, padx=(0, 10))
+        c2_in = tk.Frame(c2, bg=C["bg_card"])
+        c2_in.pack(fill="both", expand=True, padx=14, pady=10)
+
+        tk.Label(c2_in, text="ACESSO EXTERNO DIRETO (TOKEN & WAN)",
+                 font=FONT_UI_SM, bg=C["bg_card"], fg=C["text_caption"]).pack(anchor="w")
+
+        self._wan_lbl = tk.Label(c2_in,
+                 text="Detectando IP Público via STUN...",
+                 font=FONT_MONO, bg=C["bg_card"], fg=C["code_text"])
+        self._wan_lbl.pack(anchor="w", pady=(4, 4))
+
+        btn_r2 = tk.Frame(c2_in, bg=C["bg_card"])
+        btn_r2.pack(fill="x")
+        self._ext_btn = FlatBtn(btn_r2, text="Copiar Token (RL-...)",
+                                variant="subtle", command=self._copy_ext)
+        self._ext_btn.pack(side="left")
+        self._at_btn = FlatBtn(btn_r2, text="Copiar CODIGO@IP",
+                               variant="subtle", command=self._copy_code_ip)
+        self._at_btn.pack(side="left", padx=(6, 0))
+
+        # Card 3: STATUS DO SERVIDOR & PORTAS ABERTAS
+        c3 = tk.Frame(inner, bg=C["bg_card"], highlightbackground=C["border"], highlightthickness=1)
+        c3.pack(side="left", fill="both", expand=True)
+        c3_in = tk.Frame(c3, bg=C["bg_card"])
+        c3_in.pack(fill="both", expand=True, padx=14, pady=10)
+
+        tk.Label(c3_in, text="STATUS DO HOST & PORTAS ABERTAS",
+                 font=FONT_UI_SM, bg=C["bg_card"], fg=C["text_caption"]).pack(anchor="w")
+
+        self._status = StatusDot(c3_in, bg=C["bg_card"])
+        self._status.pack(anchor="w", pady=(4, 4))
         self._status.set("stopped")
+
+        self._ports_info_lbl = tk.Label(c3_in,
+                 text="Portas TCP: 52340, 7070, 6568, 8080, 8443 + Relay",
+                 font=FONT_UI_SM, bg=C["bg_card"], fg=C["success"])
+        self._ports_info_lbl.pack(anchor="w")
+
+    def set_public_ip(self, pub_ip: Optional[str], open_ports: list[int] = None):
+        if open_ports:
+            pstr = ", ".join(str(p) for p in open_ports[:5])
+            self._ports_info_lbl.config(text=f"Portas Abertas: {pstr} + Relay Ativo")
+        if pub_ip:
+            self._pub_ip = pub_ip
+            code = self._info.get("access_code", "")
+            self._ext_code = encode_external_code(code, pub_ip)
+            self._wan_lbl.config(
+                text=f"WAN: {pub_ip}  |  {self._ext_code}",
+                fg=C["success"]
+            )
+        else:
+            self._wan_lbl.config(
+                text="WAN via Relay Externo (NAT Bypass Ativo)",
+                fg=C["code_text"]
+            )
 
     def _copy(self, e=None):
         code = self._info.get("access_code", "")
@@ -876,139 +1086,300 @@ class MachineBanner(tk.Frame):
         self.winfo_toplevel().clipboard_append(code)
         orig = self._code.cget("text")
         self._code.config(text="Copiado!", fg=C["success"])
-        self.after(1800, lambda: self._code.config(text=orig, fg=C["accent"]))
+        self.after(1400, lambda: self._code.config(text=orig, fg=C["accent"]))
+
+    def _copy_ext(self, e=None):
+        token = self._ext_code or self._info.get("access_code", "")
+        self.winfo_toplevel().clipboard_clear()
+        self.winfo_toplevel().clipboard_append(token)
+        orig = self._ext_btn.cget("text")
+        self._ext_btn.config(text="Token Copiado!", fg=C["success"])
+        self.after(1500, lambda: self._ext_btn.config(text=orig, fg=C["text_secondary"]))
+
+    def _copy_code_ip(self, e=None):
+        code = self._info.get("access_code", "")
+        ip = self._pub_ip or self._info.get("local_ip", "")
+        combo = f"{code}@{ip}" if ip else code
+        self.winfo_toplevel().clipboard_clear()
+        self.winfo_toplevel().clipboard_append(combo)
+        orig = self._at_btn.cget("text")
+        self._at_btn.config(text="Copiado!", fg=C["success"])
+        self.after(1500, lambda: self._at_btn.config(text=orig, fg=C["text_secondary"]))
 
     def update_status(self, status: str):
-        labels = {"listening":"Aguardando conexoes","connected":"Cliente conectado",
-                  "stopped":"Servidor parado","error":"Erro no servidor"}
+        labels = {
+            "listening": "Pronto para receber conexões (LAN & Internet)",
+            "connected": "Cliente remoto conectado agora!",
+            "stopped":   "Servidor pausado",
+            "error":     "Erro no servidor",
+        }
         self._status.set(status, labels.get(status, status))
 
 
-# ── Viewer Window ──────────────────────────────────────────────────────────────
+# ── Viewer Window (Controle Direto de Teclado e Mouse igual ao AnyDesk) ────────
 
 class ViewerWindow(tk.Toplevel):
+    """
+    Janela de visualização e controle remoto em tempo real ("A Tela Para Mexer"):
+    - Abre IMEDIATAMENTE ao clicar em Conectar, exibindo o progresso ao vivo no canvas
+      e entrando direto na tela remota assim que o primeiro frame chega.
+    - Quando o mouse está sobre a tela remota (modo REMOTO), instala um Hook Win32
+      de baixo nível (WH_KEYBOARD_LL, igual ao AnyDesk.exe) que captura todas as teclas
+      (incluindo Alt+Tab, tecla Windows, atalhos e acentos) e envia os códigos físicos
+      (VK + Scancode) diretamente ao computador remoto.
+    - Suporta arrastar e soltar (Mouse Down / Move / Up independentes), duplo clique
+      nativo, botão direito/meio, scroll e coordenadas normalizadas (0.0..1.0).
+    """
+
     def __init__(self, parent, client: RemoteLinkClient, remote_info: dict):
         super().__init__(parent)
         self.client      = client
-        self.remote_info = remote_info
+        self.remote_info = dict(remote_info or {})
 
-        hostname = remote_info.get("hostname", remote_info.get("ip", "Remoto"))
-        self.title(f"RemoteLink - {hostname}")
-        self.configure(bg="#0d1117")
-        self.geometry("1280x760")
-        self.minsize(800, 500)
+        hostname = self.remote_info.get("hostname") or self.remote_info.get("ip") or self.remote_info.get("code") or "Remoto"
+        self.title(f"RemoteLink — Sessão Remota: {hostname}")
+        self.configure(bg=C["bg_dark"])
+        self.geometry("1280x780")
+        self.minsize(860, 540)
 
-        self._rw = 1920
-        self._rh = 1080
+        self._rw = int(self.remote_info.get("screen_width") or 1920)
+        self._rh = int(self.remote_info.get("screen_height") or 1080)
 
         self._photo        = None
+        self._photo_size   = (0, 0)
         self._cimg         = None
         self._latest_frame = None
         self._frame_lock   = threading.Lock()
         self._fc           = 0
         self._fts          = time.time()
         self._enabled      = True
+        self._has_frames   = False
 
-        self._capturing = False
+        self._capturing    = False
+        self._fullscreen   = False
+        self._last_move_ts = 0.0
+        self._overlay_msg  = "Iniciando conexão com a máquina remota..."
+        self._overlay_sub  = "Negociando portas abertas e túnel Relay Externo..."
+        self._overlay_err  = False
+
+        # Win32 Low-Level Keyboard Hook state
+        self._ll_hook_handle = None
+        self._ll_hook_proc   = None
+        self._local_mods     = set()
 
         self._build()
-
-        self.client.on_frame        = self._on_frame
-        self.client.on_disconnected = self._on_disconnected
+        self.bind_client(client, self.remote_info)
         self.protocol("WM_DELETE_WINDOW", self._close)
+        self.bind("<F11>", lambda e: self._toggle_fullscreen())
+
+        # Garante que a janela apareça na frente imediatamente
+        self.deiconify()
+        self.lift()
+        self.focus_force()
 
         self._schedule_render()
         self._update_fps()
 
+    def bind_client(self, client: RemoteLinkClient, remote_info: dict = None):
+        self.client = client
+        if remote_info:
+            self.remote_info.update(remote_info)
+        if self.client:
+            self.client.on_frame        = self._on_frame
+            self.client.on_disconnected = self._on_disconnected
+            self.client.on_connected    = self._on_connected_cb
+
     def _build(self):
-        h  = self.remote_info.get("hostname", self.remote_info.get("ip", "\u2014"))
-        ip = self.remote_info.get("ip", "")
+        h  = self.remote_info.get("hostname") or self.remote_info.get("ip") or self.remote_info.get("code") or "\u2014"
+        ip = self.remote_info.get("ip") or ""
 
-        # ── Toolbar ───────────────────────────────────────────────────────
-        tb = tk.Frame(self, bg=C["bg_dark"], height=42)
-        tb.pack(fill="x", side="top")
-        tb.pack_propagate(False)
+        # ── Top Control Bar (Estilo AnyDesk) ──────────────────────────────
+        self._tb = tk.Frame(self, bg=C["bg_dark"], height=46)
+        self._tb.pack(fill="x", side="top")
+        self._tb.pack_propagate(False)
 
-        tk.Label(tb, text="RemoteLink", font=FONT_UI_SM,
-                 bg=C["bg_dark"], fg=C["text_secondary"]).pack(side="left", padx=(14,0))
-        tk.Label(tb, text=">", font=FONT_UI_SM,
-                 bg=C["bg_dark"], fg=C["text_disabled"]).pack(side="left", padx=(4,4))
-        tk.Label(tb, text=f" {h}", font=FONT_UI_BODY_B,
-                 bg=C["bg_dark"], fg=C["text"]).pack(side="left")
-        if ip and ip != h:
-            tk.Label(tb, text=f" ({ip})", font=FONT_UI_SM,
-                     bg=C["bg_dark"], fg=C["text_secondary"]).pack(side="left")
+        self._host_title_lbl = tk.Label(
+            self._tb, text=f"  \u25c9  {h}", font=FONT_UI_BODY_B,
+            bg=C["bg_dark"], fg=C["text"]
+        )
+        self._host_title_lbl.pack(side="left", padx=(8, 4))
 
-        tk.Frame(tb, width=14, bg=C["bg_dark"]).pack(side="left")
+        self._ip_title_lbl = tk.Label(
+            self._tb, text=f"({ip})" if (ip and ip != h) else "",
+            font=FONT_MONO, bg=C["bg_dark"], fg=C["code_text"]
+        )
+        self._ip_title_lbl.pack(side="left", padx=(0, 10))
+
+        Divider(self._tb, vertical=True).pack(side="left", fill="y", padx=6, pady=8)
 
         def btn(lbl, cmd):
-            FlatBtn(tb, text=lbl, variant="subtle",
-                    command=cmd).pack(side="left", padx=2, pady=6)
+            FlatBtn(self._tb, text=lbl, variant="subtle",
+                    command=cmd).pack(side="left", padx=2, pady=7)
 
         btn("Alt+Tab",      self._send_alt_tab)
-        btn("Win",          self._send_win)
+        btn("Tecla Win",    self._send_win)
+        btn("Win+D",        lambda: self.client.send_hotkey("win", "d") if self.client else None)
         btn("Ctrl+Alt+Del", self._send_cad)
-        btn("PrtScr",       self._send_prtscr)
-        btn("Ctrl+C",       lambda: self.client.send_hotkey("ctrl","c"))
-        btn("Ctrl+V",       lambda: self.client.send_hotkey("ctrl","v"))
-        btn("Ctrl+Z",       lambda: self.client.send_hotkey("ctrl","z"))
-        btn("Ctrl+W",       lambda: self.client.send_hotkey("ctrl","w"))
+        btn("Colar Texto",  self._paste_text_to_remote)
+        btn("Tela Cheia (F11)", self._toggle_fullscreen)
 
-        FlatBtn(tb, text="Desconectar", variant="danger",
-                command=self._close).pack(side="right", padx=(0,10), pady=6)
+        FlatBtn(self._tb, text="Encerrar", variant="danger",
+                command=self._close).pack(side="right", padx=(6, 12), pady=7)
 
-        self._cstatus = tk.Label(tb, text="Conectado", font=FONT_UI_SM,
-                                  bg=C["bg_dark"], fg=C["success"])
-        self._cstatus.pack(side="right", padx=(0,10))
+        self._cstatus = tk.Label(self._tb, text="Conectando...", font=FONT_UI_BODY_B,
+                                  bg=C["bg_dark"], fg=C["warning"])
+        self._cstatus.pack(side="right", padx=(0, 10))
 
-        self._fps_lbl = tk.Label(tb, text="- fps", font=FONT_MONO,
-                                  bg=C["bg_dark"], fg=C["text_caption"])
-        self._fps_lbl.pack(side="right", padx=(0,6))
+        self._fps_lbl = tk.Label(self._tb, text="-- fps", font=FONT_MONO,
+                                  bg=C["bg_dark"], fg=C["text_secondary"])
+        self._fps_lbl.pack(side="right", padx=(0, 8))
 
-        self._mode_lbl = tk.Label(tb, text="Local", font=FONT_UI_SM,
-                                   bg=C["bg_dark"], fg=C["text_secondary"],
-                                   cursor="hand2")
-        self._mode_lbl.pack(side="right", padx=(0,10))
+        self._mode_lbl = tk.Label(
+            self._tb, text="TECLADO/MOUSE: AGUARDANDO", font=FONT_UI_SM,
+            bg=C["bg_alt"], fg=C["text_secondary"], padx=8, pady=3, cursor="hand2"
+        )
+        self._mode_lbl.pack(side="right", padx=(0, 10))
         self._mode_lbl.bind("<Button-1>", lambda e: self._toggle_capture())
 
-        Divider(self, color=C["bg_dark"]).pack(fill="x")
+        Divider(self, color=C["border"]).pack(fill="x")
 
-        # ── Canvas ────────────────────────────────────────────────────────
-        self._cv = tk.Canvas(self, bg="#0d1117", highlightthickness=0,
-                              cursor="none")
+        # ── Canvas (Tela Remota) ──────────────────────────────────────────
+        self._cv = tk.Canvas(self, bg="#06090f", highlightthickness=0,
+                              takefocus=1)
         self._cv.pack(fill="both", expand=True)
+
+        # Overlay de status centralizado no Canvas (visível enquanto aguarda o 1º frame)
+        self._ov_box = self._cv.create_rectangle(
+            0, 0, 0, 0, fill="#111927", outline=C["border"], width=2, tags="overlay"
+        )
+        self._ov_title = self._cv.create_text(
+            0, 0, text=self._overlay_msg, font=FONT_UI_SUBH,
+            fill=C["text"], justify="center", width=620, tags="overlay"
+        )
+        self._ov_sub = self._cv.create_text(
+            0, 0, text=self._overlay_sub, font=FONT_MONO,
+            fill=C["code_text"], justify="center", width=620, tags="overlay"
+        )
 
         self._cursor_item = self._cv.create_oval(
             -20, -20, -10, -10,
-            fill="#f85149", outline="#ffffff", width=1.5,
+            fill="#3b82f6", outline="#ffffff", width=1.5,
             tags="cursor", state="hidden")
 
         self._border = self._cv.create_rectangle(
             0, 0, 0, 0,
-            outline=C["accent"], width=3,
+            outline=C["accent"], width=2,
             tags="border", state="hidden")
 
+        # Eventos de mouse: Press, Release e Arrasto (B1/B2/B3-Motion) separados!
         self._cv.bind("<Enter>",           self._on_enter_canvas)
         self._cv.bind("<Leave>",           self._on_leave_canvas)
         self._cv.bind("<Motion>",          self._on_mouse_motion)
-        self._cv.bind("<ButtonPress-1>",   lambda e: self._on_btn(e,"left"))
-        self._cv.bind("<ButtonPress-3>",   lambda e: self._on_btn(e,"right"))
-        self._cv.bind("<ButtonPress-2>",   lambda e: self._on_btn(e,"middle"))
-        self._cv.bind("<Double-Button-1>", self._on_dbl)
+        self._cv.bind("<B1-Motion>",       self._on_mouse_motion)
+        self._cv.bind("<B2-Motion>",       self._on_mouse_motion)
+        self._cv.bind("<B3-Motion>",       self._on_mouse_motion)
+
+        self._cv.bind("<ButtonPress-1>",   lambda e: self._on_mouse_btn(e, "left", "down"))
+        self._cv.bind("<ButtonRelease-1>", lambda e: self._on_mouse_btn(e, "left", "up"))
+        self._cv.bind("<ButtonPress-2>",   lambda e: self._on_mouse_btn(e, "middle", "down"))
+        self._cv.bind("<ButtonRelease-2>", lambda e: self._on_mouse_btn(e, "middle", "up"))
+        self._cv.bind("<ButtonPress-3>",   lambda e: self._on_mouse_btn(e, "right", "down"))
+        self._cv.bind("<ButtonRelease-3>", lambda e: self._on_mouse_btn(e, "right", "up"))
+
         self._cv.bind("<MouseWheel>",      self._on_scroll)
         self._cv.bind("<Button-4>",        lambda e: self._on_scroll_delta(e,  3))
         self._cv.bind("<Button-5>",        lambda e: self._on_scroll_delta(e, -3))
-        self._cv.bind("<Configure>", self._on_canvas_resize)
+        self._cv.bind("<Configure>",       self._on_canvas_resize)
 
+        # Eventos de teclado (fallback multiplataforma + composição Unicode)
         self.bind("<KeyPress>",   self._on_key_press)
         self.bind("<KeyRelease>", self._on_key_release)
+        self._cv.bind("<KeyPress>",   self._on_key_press)
+        self._cv.bind("<KeyRelease>", self._on_key_release)
+        self.bind("<FocusOut>",   self._on_focus_out)
 
+    def _layout_overlay(self):
+        if self._has_frames:
+            self._cv.itemconfig("overlay", state="hidden")
+            return
+        cw = max(400, self._cv.winfo_width())
+        ch = max(300, self._cv.winfo_height())
+        cx, cy = cw // 2, ch // 2
+        bw, bh = 680, 170
+        self._cv.coords(self._ov_box, cx - bw // 2, cy - bh // 2, cx + bw // 2, cy + bh // 2)
+        self._cv.coords(self._ov_title, cx, cy - 26)
+        self._cv.coords(self._ov_sub, cx, cy + 28)
+        self._cv.itemconfig("overlay", state="normal")
+        self._cv.tag_raise("overlay")
+
+    def set_connecting_status(self, subtitle: str, title: str = None):
+        if not self._enabled or not self.winfo_exists():
+            return
+        if title:
+            self._overlay_msg = title
+        self._overlay_sub = subtitle
+        self._overlay_err = False
+        self.after(0, self._apply_overlay_text)
+
+    def set_error_status(self, err_msg: str):
+        if not self._enabled or not self.winfo_exists():
+            return
+        self._overlay_msg = "Não foi possível estabelecer a sessão remota"
+        self._overlay_sub = err_msg
+        self._overlay_err = True
+        self.after(0, self._apply_overlay_text)
+
+    def _apply_overlay_text(self):
+        if not self.winfo_exists():
+            return
+        self._cv.itemconfig(self._ov_title, text=self._overlay_msg,
+                            fill=C["error"] if self._overlay_err else C["text"])
+        self._cv.itemconfig(self._ov_sub, text=self._overlay_sub,
+                            fill=C["text_secondary"] if self._overlay_err else C["code_text"])
+        self._cv.itemconfig(self._ov_box,
+                            outline=C["error"] if self._overlay_err else C["accent"])
+        if self._overlay_err:
+            self._cstatus.config(text="Falha na Conexão", fg=C["error"])
+        self._layout_overlay()
+
+    def _on_connected_cb(self, rinfo: dict):
+        if not self._enabled:
+            return
+        self.remote_info.update(rinfo or {})
+        def _upd():
+            if not self.winfo_exists():
+                return
+            h = self.remote_info.get("hostname") or self.remote_info.get("ip") or "Remoto"
+            ip = self.remote_info.get("ip") or ""
+            mode = self.remote_info.get("mode") or "Conectado"
+            self.title(f"RemoteLink — {h} ({mode})")
+            self._host_title_lbl.config(text=f"  \u25c9  {h}")
+            self._ip_title_lbl.config(text=f"({ip} • {mode})" if ip else f"({mode})")
+            self._cstatus.config(text="Conectado", fg=C["success"])
+            self.set_connecting_status("Conectado! Recebendo imagem da tela remota...", f"Conectado a {h}")
+            self._set_capturing(True)
+        self.after(0, _upd)
+
+    def _paste_text_to_remote(self):
         try:
-            self.bind_all("<Alt-Tab>", self._on_key_press)
+            txt = self.clipboard_get()
+            if txt and self.client and self.client.is_connected():
+                self.client.send_text(txt)
         except Exception:
             pass
 
-    # ── Capture mode ──────────────────────────────────────────────────────
+    # ── Captura Direta de Teclado (Estável e Sem Crash de Thread Tcl) ─────
+
+    def _install_keyboard_hook(self):
+        try:
+            self._cv.focus_set()
+        except Exception:
+            pass
+
+    def _uninstall_keyboard_hook(self):
+        self._local_mods.clear()
+
+    # ── Capture & Fullscreen mode ─────────────────────────────────────────
 
     def _on_enter_canvas(self, e):
         self._set_capturing(True)
@@ -1016,11 +1387,25 @@ class ViewerWindow(tk.Toplevel):
     def _on_leave_canvas(self, e):
         self._set_capturing(False)
 
+    def _on_focus_out(self, e):
+        if e.widget is self and self.client:
+            self.client.release_all_inputs()
+
     def _toggle_capture(self):
         self._set_capturing(not self._capturing)
 
+    def _toggle_fullscreen(self):
+        self._fullscreen = not self._fullscreen
+        self.attributes("-fullscreen", self._fullscreen)
+        self._cv.focus_set()
+
     def _set_capturing(self, active: bool):
         if self._capturing == active:
+            if active:
+                try:
+                    self._cv.focus_set()
+                except Exception:
+                    pass
             return
         self._capturing = active
 
@@ -1029,22 +1414,29 @@ class ViewerWindow(tk.Toplevel):
             self._cv.itemconfig("cursor", state="normal")
             self._cv.itemconfig("border", state="normal")
             self._mode_lbl.config(
-                text="REMOTO", fg=C["accent"],
+                text="TECLADO/MOUSE: DIRETO ATIVO", bg=C["accent_muted"], fg=C["accent"],
                 font=(FONT_UI_SM[0], FONT_UI_SM[1], "bold"))
-            self.focus_force()
+            try:
+                self._cv.focus_set()
+            except Exception:
+                pass
         else:
+            self._uninstall_keyboard_hook()
+            if self.client:
+                self.client.release_all_inputs()
             self._cv.config(cursor="")
             self._cv.itemconfig("cursor", state="hidden")
             self._cv.itemconfig("border", state="hidden")
             self._mode_lbl.config(
-                text="Local", fg=C["text_secondary"],
+                text="TECLADO/MOUSE: LOCAL", bg=C["bg_alt"], fg=C["text_secondary"],
                 font=FONT_UI_SM)
 
     def _on_canvas_resize(self, e):
         w, h = e.width, e.height
-        self._cv.coords("border", 2, 2, w-2, h-2)
+        self._cv.coords("border", 1, 1, w - 1, h - 1)
+        self._layout_overlay()
 
-    # ── Frame rendering ───────────────────────────────────────────────────
+    # ── Frame rendering (Reutiliza PhotoImage in-place para zero crash GC) ─
 
     def _on_frame(self, data: bytes, ts: int):
         with self._frame_lock:
@@ -1052,8 +1444,10 @@ class ViewerWindow(tk.Toplevel):
             self._fc += 1
 
     def _schedule_render(self):
+        if not self._enabled or not self.winfo_exists():
+            return
         self._render_frame()
-        if self._enabled:
+        if self._enabled and self.winfo_exists():
             self.after(16, self._schedule_render)
 
     def _render_frame(self):
@@ -1067,6 +1461,12 @@ class ViewerWindow(tk.Toplevel):
             img = Image.open(io.BytesIO(data))
             self._rw, self._rh = img.size
 
+            if not self._has_frames:
+                self._has_frames = True
+                self._cv.itemconfig("overlay", state="hidden")
+                self._cstatus.config(text="Ao Vivo", fg=C["success"])
+                self._cv.focus_set()
+
             cw = self._cv.winfo_width()
             ch = self._cv.winfo_height()
             if cw < 2 or ch < 2:
@@ -1075,18 +1475,25 @@ class ViewerWindow(tk.Toplevel):
             sc = min(cw / self._rw, ch / self._rh)
             nw = max(1, int(self._rw * sc))
             nh = max(1, int(self._rh * sc))
-            img = img.resize((nw, nh), Image.LANCZOS)
-
-            photo = ImageTk.PhotoImage(img)
-            self._photo = photo
+            if (nw, nh) != (self._rw, self._rh):
+                img = img.resize((nw, nh), Image.BILINEAR)
 
             cx, cy = cw // 2, ch // 2
-            if self._cimg is None:
-                self._cimg = self._cv.create_image(cx, cy, image=photo,
-                                                    anchor="center", tags="frame")
+            # Reutiliza self._photo via .paste(img) quando as dimensões são iguais,
+            # evitando criar/destruir PhotoImage a cada frame (previne Tcl_AsyncDelete crash!)
+            if self._photo is not None and self._photo_size == (nw, nh):
+                self._photo.paste(img)
+                if self._cimg is not None:
+                    self._cv.coords(self._cimg, cx, cy)
             else:
-                self._cv.itemconfig(self._cimg, image=photo)
-                self._cv.coords(self._cimg, cx, cy)
+                self._photo = ImageTk.PhotoImage(img)
+                self._photo_size = (nw, nh)
+                if self._cimg is None:
+                    self._cimg = self._cv.create_image(cx, cy, image=self._photo,
+                                                        anchor="center", tags="frame")
+                else:
+                    self._cv.itemconfig(self._cimg, image=self._photo)
+                    self._cv.coords(self._cimg, cx, cy)
 
             self._cv.tag_lower("frame")
             self._cv.tag_raise("cursor")
@@ -1094,151 +1501,164 @@ class ViewerWindow(tk.Toplevel):
         except Exception as e:
             logger.debug(f"render: {e}")
 
-    # ── Coordinate transforms ─────────────────────────────────────────────
+    # ── Coordinate transforms (Pixel + Normalizado 0.0..1.0) ──────────────
 
-    def _tr(self, cx, cy):
+    def _tr(self, cx, cy) -> tuple[int, int, float, float]:
         cw = self._cv.winfo_width()
         ch = self._cv.winfo_height()
         if cw < 2 or ch < 2 or self._rw < 1 or self._rh < 1:
-            return 0, 0
+            return 0, 0, 0.0, 0.0
 
         sc = min(cw / self._rw, ch / self._rh)
-        ox = (cw - int(self._rw * sc)) // 2
-        oy = (ch - int(self._rh * sc)) // 2
+        disp_w = max(1, int(self._rw * sc))
+        disp_h = max(1, int(self._rh * sc))
+        ox = (cw - disp_w) // 2
+        oy = (ch - disp_h) // 2
 
-        rx = int((cx - ox) / sc)
-        ry = int((cy - oy) / sc)
+        nx = max(0.0, min(1.0, (cx - ox) / disp_w))
+        ny = max(0.0, min(1.0, (cy - oy) / disp_h))
 
-        return max(0, min(rx, self._rw - 1)), max(0, min(ry, self._rh - 1))
+        rx = int(nx * (self._rw - 1))
+        ry = int(ny * (self._rh - 1))
+
+        return rx, ry, nx, ny
 
     def _move_cursor(self, cx, cy):
-        r = 5
-        self._cv.coords("cursor", cx-r, cy-r, cx+r, cy+r)
+        r = 4
+        self._cv.coords("cursor", cx - r, cy - r, cx + r, cy + r)
 
-    # ── Mouse events ──────────────────────────────────────────────────────
+    # ── Mouse events (Press, Release, Drag, Scroll — igual ao AnyDesk) ────
 
     def _on_mouse_motion(self, e):
         self._move_cursor(e.x, e.y)
-        if self._capturing and self._enabled:
-            rx, ry = self._tr(e.x, e.y)
-            self.client.send_mouse_move(rx, ry)
+        if not self._capturing:
+            self._set_capturing(True)
+        if self._capturing and self._enabled and self.client and self.client.is_connected():
+            now = time.perf_counter()
+            rx, ry, nx, ny = self._tr(e.x, e.y)
+            if now - self._last_move_ts >= 0.008:
+                self._last_move_ts = now
+                self.client.send_mouse_move(rx, ry, nx, ny)
 
-    def _on_btn(self, e, btn: str):
-        if self._capturing and self._enabled:
-            rx, ry = self._tr(e.x, e.y)
-            self.client.send_mouse_click(rx, ry, btn, "down")
-            self.client.send_mouse_click(rx, ry, btn, "up")
-        self.focus_force()
-
-    def _on_dbl(self, e):
-        if self._capturing and self._enabled:
-            rx, ry = self._tr(e.x, e.y)
-            self.client.send_mouse_dblclick(rx, ry)
+    def _on_mouse_btn(self, e, btn: str, state: str):
+        if not self._capturing:
+            self._set_capturing(True)
+        self._cv.focus_set()
+        if self._capturing and self._enabled and self.client and self.client.is_connected():
+            rx, ry, nx, ny = self._tr(e.x, e.y)
+            self.client.send_mouse_click(rx, ry, btn, state, nx, ny)
 
     def _on_scroll(self, e):
-        if self._capturing and self._enabled:
-            rx, ry = self._tr(e.x, e.y)
-            self.client.send_mouse_scroll(rx, ry, 3 if e.delta > 0 else -3)
+        if self._capturing and self._enabled and self.client and self.client.is_connected():
+            rx, ry, nx, ny = self._tr(e.x, e.y)
+            steps = int(e.delta / 120) if abs(e.delta) >= 120 else (1 if e.delta > 0 else -1)
+            self.client.send_mouse_scroll(rx, ry, steps * 3, nx=nx, ny=ny)
 
     def _on_scroll_delta(self, e, d):
-        if self._capturing and self._enabled:
-            rx, ry = self._tr(e.x, e.y)
-            self.client.send_mouse_scroll(rx, ry, d)
+        if self._capturing and self._enabled and self.client and self.client.is_connected():
+            rx, ry, nx, ny = self._tr(e.x, e.y)
+            self.client.send_mouse_scroll(rx, ry, d, nx=nx, ny=ny)
 
-    # ── Keyboard events ───────────────────────────────────────────────────
+    # ── Keyboard events (Envio Direto de Key + VK + Scancode + Unicode) ───
 
-    _KEY_MAP = {
-        "Return":"enter",    "BackSpace":"backspace", "Delete":"delete",
-        "Escape":"escape",   "Tab":"tab",             "space":"space",
-        "Up":"up",           "Down":"down",           "Left":"left",
-        "Right":"right",     "Home":"home",           "End":"end",
-        "Prior":"pageup",    "Next":"pagedown",       "Insert":"insert",
-        "Print":"printscreen","Pause":"pause",        "Caps_Lock":"capslock",
-        "Num_Lock":"numlock","Scroll_Lock":"scrolllock",
-        "Super_L":"win",     "Super_R":"win",
-        "Alt_L":"alt",       "Alt_R":"alt",
-        "Control_L":"ctrl",  "Control_R":"ctrl",
-        "Shift_L":"shift",   "Shift_R":"shift",
-        "KP_Enter":"enter",  "KP_Add":"add",          "KP_Subtract":"subtract",
-        "KP_Multiply":"multiply","KP_Divide":"divide","KP_Decimal":"decimal",
-        **{f"KP_{i}":f"num{i}" for i in range(10)},
-        **{f"F{i}":f"f{i}" for i in range(1,25)},
-    }
-
-    _ONLY_MODS = {
-        "Alt_L","Alt_R","Control_L","Control_R","Shift_L","Shift_R",
-        "Super_L","Super_R","Caps_Lock","Num_Lock","Scroll_Lock",
-        "Meta_L","Meta_R","ISO_Level3_Shift",
-    }
-
-    def _map_key(self, tk_key):
+    def _map_key(self, tk_key: str) -> str:
         mapping = {
-            "Control_L": "ctrl", "Control_R": "ctrl",
-            "Shift_L": "shift", "Shift_R": "shift",
-            "Alt_L": "alt", "Alt_R": "alt",
-            "Caps_Lock": "caps_lock",
-            "Tab": "tab", "Return": "enter", "BackSpace": "backspace",
-            "Escape": "esc", "Space": "space",
+            "Control_L": "lctrl", "Control_R": "rctrl",
+            "Shift_L": "lshift", "Shift_R": "rshift",
+            "Alt_L": "lalt", "Alt_R": "ralt",
+            "Caps_Lock": "capslock", "Num_Lock": "numlock", "Scroll_Lock": "scrolllock",
+            "Tab": "tab", "Return": "enter", "KP_Enter": "enter",
+            "BackSpace": "backspace", "Escape": "esc", "space": "space", "Space": "space",
             "Delete": "delete", "Insert": "insert",
             "Home": "home", "End": "end",
-            "Prior": "page_up", "Next": "page_down",
+            "Prior": "pageup", "Next": "pagedown",
             "Left": "left", "Right": "right", "Up": "up", "Down": "down",
-            "F1": "f1", "F2": "f2", "F3": "f3", "F4": "f4", "F5": "f5",
-            "F6": "f6", "F7": "f7", "F8": "f8", "F9": "f9", "F10": "f10",
-            "F11": "f11", "F12": "f12",
-            "Print": "prtscr", "Scroll_Lock": "scroll_lock", "Pause": "pause",
-            "Windows": "win", "Super_L": "win", "Super_R": "win",
+            "Print": "printscreen", "Pause": "pause",
+            "Win_L": "lwin", "Win_R": "rwin", "Super_L": "lwin", "Super_R": "rwin",
+            "App": "apps", "Menu": "apps",
+            "semicolon": ";", "equal": "=", "comma": ",", "minus": "-",
+            "period": ".", "slash": "/", "grave": "`", "quoteleft": "`",
+            "bracketleft": "[", "backslash": "\\", "bracketright": "]",
+            "apostrophe": "'", "quoteright": "'",
+            "KP_Add": "add", "KP_Subtract": "subtract",
+            "KP_Multiply": "multiply", "KP_Divide": "divide", "KP_Decimal": "decimal",
+            **{f"KP_{i}": f"num{i}" for i in range(10)},
+            **{f"F{i}": f"f{i}" for i in range(1, 25)},
         }
-        return mapping.get(tk_key, tk_key.lower() if len(tk_key) == 1 else tk_key)
+        return mapping.get(tk_key, tk_key.lower() if len(tk_key) == 1 else tk_key.lower())
 
     def _on_key_press(self, e):
-        if self._capturing and self._enabled:
-            key = self._map_key(e.keysym)
-            self.client.send_key_down(key)
+        if not self._enabled or not self.client or not self.client.is_connected():
+            return
+        if not self._capturing:
+            self._set_capturing(True)
+        key = self._map_key(e.keysym)
+        vk = int(getattr(e, "keycode", 0) or 0) if _IS_WIN else 0
+        scan = 0
+        if _IS_WIN and vk > 0:
+            try:
+                scan = int(_user32.MapVirtualKeyW(vk, 0))
+            except Exception:
+                scan = 0
+        ch = e.char if (e.char and len(e.char) == 1 and ord(e.char) >= 32) else ""
+        self.client.send_key_down(key=key, vk=vk, scan=scan, char=ch)
+        return "break"
 
     def _on_key_release(self, e):
-        if self._capturing and self._enabled:
-            key = self._map_key(e.keysym)
-            self.client.send_key_up(key)
+        if not self._enabled or not self.client or not self.client.is_connected():
+            return
+        key = self._map_key(e.keysym)
+        vk = int(getattr(e, "keycode", 0) or 0) if _IS_WIN else 0
+        scan = 0
+        if _IS_WIN and vk > 0:
+            try:
+                scan = int(_user32.MapVirtualKeyW(vk, 0))
+            except Exception:
+                scan = 0
+        self.client.send_key_up(key=key, vk=vk, scan=scan)
+        return "break"
 
     # ── Disconnect ────────────────────────────────────────────────────────
 
     def _on_disconnected(self):
-        self.after(0, lambda: self._cstatus.config(
-            text="Desconectado", fg=C["error"]))
+        self._uninstall_keyboard_hook()
+        if self.winfo_exists():
+            self.after(0, lambda: self._cstatus.config(
+                text="Desconectado", fg=C["error"]))
 
     def _close(self):
         self._enabled = False
-        try: self.client.disconnect()
-        except Exception: pass
-        self.destroy()
+        self._uninstall_keyboard_hook()
+        try:
+            if self.client:
+                self.client.disconnect()
+        except Exception:
+            pass
+        try:
+            self.destroy()
+        except Exception:
+            pass
 
-    # ── Special keys (stubs) ──────────────────────────────────────────────
+    # ── Special keys (Atalhos na Toolbar) ─────────────────────────────────
 
     def _send_alt_tab(self):
-        self.client.send_key_down("alt")
-        self.client.send_key_down("tab")
-        self.client.send_key_up("tab")
-        self.client.send_key_up("alt")
+        if self.client and self.client.is_connected():
+            self.client.send_hotkey("alt", "tab")
 
     def _send_win(self):
-        self.client.send_key_down("win")
-        self.client.send_key_up("win")
+        if self.client and self.client.is_connected():
+            self.client.send_hotkey("win")
 
     def _send_cad(self):
-        self.client.send_key_down("ctrl")
-        self.client.send_key_down("alt")
-        self.client.send_key_down("delete")
-        self.client.send_key_up("delete")
-        self.client.send_key_up("alt")
-        self.client.send_key_up("ctrl")
+        if self.client and self.client.is_connected():
+            self.client.send_hotkey("ctrl", "alt", "delete")
 
     def _send_prtscr(self):
-        self.client.send_key_down("printscreen")
-        self.client.send_key_up("printscreen")
+        if self.client and self.client.is_connected():
+            self.client.send_hotkey("printscreen")
 
     def _update_fps(self):
-        if self._enabled:
+        if self._enabled and self.winfo_exists():
             now = time.time()
             elapsed = now - self._fts
             if elapsed >= 1.0:
@@ -1254,9 +1674,9 @@ class ViewerWindow(tk.Toplevel):
 class RemoteLinkApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("RemoteLink")
-        self.geometry("980x680")
-        self.minsize(800, 560)
+        self.title("RemoteLink v2.0 — Acesso Remoto Direto (LAN & Rede Externa)")
+        self.geometry("1080x720")
+        self.minsize(900, 600)
         self.configure(bg=C["bg_surface"])
         try:
             self.iconbitmap("assets/icon.ico")
@@ -1264,16 +1684,16 @@ class RemoteLinkApp(tk.Tk):
             pass
         configure_styles()
 
-        self.machine_info = get_machine_info()
+        self.machine_info = get_machine_info(fetch_public=False)
         self.server = RemoteLinkServer(access_code=self.machine_info["access_code"])
         self.client: Optional[RemoteLinkClient] = None
         self.viewer_window: Optional[ViewerWindow] = None
 
         self._build()
-        self.after(400, self._autostart)
+        self.after(250, self._autostart)
 
     def _build(self):
-        # Top banner
+        # Top dashboard banner
         self._banner = MachineBanner(self, self.machine_info)
         self._banner.pack(fill="x")
         Divider(self).pack(fill="x")
@@ -1283,10 +1703,10 @@ class RemoteLinkApp(tk.Tk):
         body.pack(fill="both", expand=True)
 
         # Nav sidebar
-        nav = tk.Frame(body, bg=C["nav_bg"], width=180)
+        nav = tk.Frame(body, bg=C["nav_bg"], width=195)
         nav.pack(side="left", fill="y")
         nav.pack_propagate(False)
-        tk.Frame(nav, height=10, bg=C["nav_bg"]).pack()
+        tk.Frame(nav, height=12, bg=C["nav_bg"]).pack()
 
         # Content
         self._content = tk.Frame(body, bg=C["bg_surface"])
@@ -1303,33 +1723,39 @@ class RemoteLinkApp(tk.Tk):
         def _on_connect(addr, info):
             self._pages["share"].on_client_connected(addr, info)
             self._banner.update_status("connected")
+
         def _on_disconnect():
             self._pages["share"].on_client_disconnected()
             self._banner.update_status("listening")
+
         def _on_status(s):
             self._banner.update_status(s)
+
+        def _on_net_event(msg):
+            self._pages["share"].log_network_event(msg)
 
         self.server.on_client_connect    = _on_connect
         self.server.on_client_disconnect = _on_disconnect
         self.server.on_status_change     = _on_status
+        self.server.on_network_event     = _on_net_event
 
         # Nav items
         self._navitems = {}
         for key, label in [
-            ("connect", "Conectar"),
-            ("share",   "Compartilhar"),
+            ("connect", "Conectar à Tela"),
+            ("share",   "Servidor & Portas"),
         ]:
             ni = NavItem(nav, label,
                          command=lambda k=key: self._show(k))
-            ni.pack(fill="x", padx=8, pady=1)
+            ni.pack(fill="x", padx=8, pady=2)
             self._navitems[key] = ni
 
         # Footer
         tk.Frame(nav, bg=C["nav_bg"]).pack(fill="y", expand=True)
         Divider(nav).pack(fill="x", padx=8)
-        tk.Label(nav, text="RemoteLink v1.0",
+        tk.Label(nav, text="RemoteLink v2.0\nAnyDesk-Engine Input",
                  font=FONT_UI_SM, bg=C["nav_bg"],
-                 fg=C["text_caption"]).pack(pady=10)
+                 fg=C["text_caption"], justify="center").pack(pady=12)
 
         self._show("connect")
 
@@ -1343,166 +1769,139 @@ class RemoteLinkApp(tk.Tk):
     def _autostart(self):
         self._pages["share"]._do_toggle()
 
+        def _fetch_wan():
+            try:
+                pub_ip = get_public_ip(force_refresh=True)
+                self.machine_info["public_ip"] = pub_ip
+                if self.winfo_exists():
+                    self.after(0, lambda: self._banner.set_public_ip(pub_ip, self.server.listening_ports) if self.winfo_exists() else None)
+            except Exception:
+                pass
+
+        threading.Thread(target=_fetch_wan, daemon=True, name="RL-WanCheck").start()
+
     def _do_connect(self, info: dict):
+        """
+        Abre IMEDIATAMENTE a ViewerWindow ("a tela para mexer") e executa a
+        conexão inteligente (Multi-Portas Paralelas + Relay Externo + LAN Scan) em background,
+        mostrando o progresso na própria tela remota.
+        """
         method = info.get("method", "ip")
         ip     = info.get("ip")
-        code   = (info.get("code") or "").strip().upper()
+        port   = int(info.get("port") or 52340)
+        code   = (info.get("code") or info.get("access_code") or "").strip().upper()
 
-        if method == "access_code" and not ip:
-            if is_own_code(code):
-                messagebox.showerror("Restricao", "Voce nao pode se conectar ao seu proprio codigo de acesso.")
-                return
-            self._connect_by_code(code)
+        if code and is_own_code(code):
+            messagebox.showerror("Restrição", "Você não pode se conectar ao seu próprio código de acesso.")
+            return
+        if ip and is_local_target(ip):
+            messagebox.showerror("Restrição", "Não é possível conectar ao seu próprio IP.\nInforme o código ou IP de outro computador.")
             return
 
-        if not ip:
-            messagebox.showerror("Erro de Conexao",
-                "Nao foi possivel resolver o endereco IP.\n\n"
-                "Certifique-se que o RemoteLink esta rodando no alvo\n"
-                "e que ambos estao na mesma rede.")
-            return
+        # Fecha sessão anterior se existir
+        if self.client:
+            try:
+                self.client.disconnect()
+            except Exception:
+                pass
 
-        # Impede conexao com a propria maquina
-        if is_local_target(ip):
-            messagebox.showerror("Restricao", "Nao e possivel conectar ao seu proprio IP.\n\nInsira o IP, hostname ou codigo de outro computador.")
-            return
+        last_err = {"msg": ""}
 
         def on_error(msg):
-            self.after(0, lambda m=msg: messagebox.showerror("Erro de Conexao", m))
+            last_err["msg"] = msg
+            if self.viewer_window and self.viewer_window.winfo_exists():
+                self.viewer_window.set_error_status(msg)
 
         self.client = RemoteLinkClient(
             on_status_change=lambda s: None,
             on_error=on_error,
         )
 
-        def run():
-            hostname = info.get("hostname", "")
+        target_label = info.get("hostname") or ip or code or "Computador Remoto"
+        initial_info = {
+            "hostname": target_label,
+            "ip": ip or "",
+            "port": port,
+            "code": code,
+            "access_code": code,
+        }
 
-            ips_to_try = [ip]
-            if method == "hostname" and hostname:
-                for extra_ip in resolve_hostname_to_ips(hostname):
-                    if extra_ip not in ips_to_try:
-                        ips_to_try.append(extra_ip)
-
-            send_code = code if method == "access_code" else ""
-
-            for try_ip in ips_to_try:
-                ok = self.client.connect(
-                    ip=try_ip,
-                    access_code=send_code,
-                    local_access_code=self.machine_info["access_code"],
-                )
-                if ok:
-                    rinfo = self.client.remote_info or {}
-                    rinfo["ip"]       = try_ip
-                    rinfo["hostname"] = hostname or rinfo.get("hostname", try_ip)
-                    self.after(0, lambda r=rinfo: self._open_viewer(r))
-                    return
-
-            self.client = None
-
-        threading.Thread(target=run, daemon=True, name="RL-Connect").start()
-
-    def _connect_by_code(self, code: str):
-        from tkinter import messagebox as mb
-
-        prog_win = tk.Toplevel(self)
-        prog_win.title("Buscando maquina...")
-        prog_win.geometry("360x120")
-        prog_win.resizable(False, False)
-        prog_win.configure(bg=C["bg_surface"])
-        prog_win.grab_set()
-        prog_win.transient(self)
-
-        tk.Label(prog_win, text=f"Procurando codigo {code} na rede...",
-                 font=FONT_UI, bg=C["bg_surface"], fg=C["text"]).pack(pady=(20, 8))
-        bar = ttk.Progressbar(prog_win, mode="indeterminate",
-                              style="Horizontal.TProgressbar")
-        bar.pack(fill="x", padx=30, pady=(0, 8))
-        bar.start(12)
-        status_lbl = tk.Label(prog_win, text="Escaneando...",
-                              font=FONT_UI_SM, bg=C["bg_surface"],
-                              fg=C["text_secondary"])
-        status_lbl.pack()
-
-        found_event = threading.Event()
-        result = {"ip": None, "info": None, "cancelled": False}
-
-        def cancel():
-            result["cancelled"] = True
-            found_event.set()
-            prog_win.destroy()
-
-        prog_win.protocol("WM_DELETE_WINDOW", cancel)
-
-        def scan_and_try():
-            from core.client import probe_target
-            from core.identity import NetworkScanner, get_all_local_ips
-
-            my_ips = set(get_all_local_ips())
-
-            def on_found(machine):
-                if found_event.is_set() or result["cancelled"]:
-                    return
-                ip = machine["ip"]
-                try:
-                    prog_win.after(0, lambda: status_lbl.config(
-                        text=f"Testando {ip}..."))
-                except Exception:
-                    return
-                from core.client import RemoteLinkClient
-                test_client = RemoteLinkClient()
-                ok = test_client.connect(ip=ip, access_code=code)
-                if ok:
-                    result["ip"]   = ip
-                    result["info"] = test_client.remote_info or {}
-                    result["info"]["ip"] = ip
-                    result["client"] = test_client
-                    found_event.set()
-                else:
-                    test_client.disconnect()
-
-            def on_done(found_list):
-                found_event.set()
-
-            scanner = NetworkScanner(
-                on_found=on_found,
-                on_done=on_done,
-                max_workers=80,
-                timeout=0.4,
+        # Abre IMEDIATAMENTE a janela da tela remota ("a tela para mexer")!
+        self._open_viewer(initial_info)
+        if self.viewer_window and self.viewer_window.winfo_exists():
+            self.viewer_window.set_connecting_status(
+                "Testando portas abertas (52340, 7070, 6568, 8080, 8443, 33890...) e túnel Relay Externo...",
+                title=f"Conectando a {target_label}..."
             )
-            scanner.start()
-            found_event.wait(timeout=45)
 
-            if result["cancelled"]:
+        def run_connection():
+            def on_prog(txt: str):
+                if self.viewer_window and self.viewer_window.winfo_exists():
+                    self.viewer_window.set_connecting_status(txt)
+
+            target_dict = dict(info)
+            target_dict["access_code"] = code
+            target_dict["port"] = port
+
+            ok = self.client.connect_smart(
+                target_dict,
+                local_access_code=self.machine_info["access_code"],
+                on_progress=on_prog,
+            )
+            if ok:
                 return
 
+            # Se era um código de 6 dígitos e ainda não conectou via WAN/Relay, tenta varredura rápida na LAN
+            if len(code.replace("-", "")) == 6:
+                on_prog("Buscando computador também na rede local (LAN/VPN)...")
+                found_lan = {"ok": False}
+                done_ev = threading.Event()
+
+                def on_lan_found(m):
+                    if found_lan["ok"] or is_local_target(m.get("ip", "")):
+                        return
+                    if self.client.connect(
+                        m["ip"], port=int(m.get("port") or 52340),
+                        access_code=code,
+                        local_access_code=self.machine_info["access_code"],
+                        timeout=2.5, silent_error=True
+                    ):
+                        found_lan["ok"] = True
+                        done_ev.set()
+
+                scanner = NetworkScanner(
+                    on_found=on_lan_found,
+                    on_done=lambda _: done_ev.set(),
+                    max_workers=80,
+                    timeout=0.35,
+                )
+                scanner.start()
+                done_ev.wait(timeout=8.0)
+                scanner.stop()
+                if found_lan["ok"]:
+                    return
+
+            if self.viewer_window and self.viewer_window.winfo_exists():
+                err_txt = last_err["msg"] or (
+                    "Tempo de conexão esgotado.\n"
+                    "Para acesso externo sem abrir portas no roteador, use o Código de 6 dígitos (ex: 750-789)!"
+                )
+                self.viewer_window.set_error_status(err_txt)
+
+        threading.Thread(target=run_connection, daemon=True, name="RL-SmartConnect").start()
+
+    def _open_viewer(self, remote_info: dict):
+        if self.viewer_window and self.viewer_window.winfo_exists():
             try:
-                prog_win.destroy()
+                self.viewer_window._enabled = False
+                self.viewer_window._uninstall_keyboard_hook()
+                self.viewer_window.destroy()
             except Exception:
                 pass
-
-            if result["ip"] and not result["cancelled"]:
-                self.client = result["client"]
-                rinfo = result["info"]
-                self.after(0, lambda: self._open_viewer(rinfo))
-            else:
-                self.after(0, lambda: mb.showerror(
-                    "Codigo nao encontrado",
-                    f"Nenhuma maquina com o codigo {code} foi encontrada na rede.\n\n"
-                    "Verifique se:\n"
-                    "- O RemoteLink esta aberto no computador alvo\n"
-                    "- Ambos estao na mesma rede (LAN/WiFi)\n"
-                    "- O codigo esta correto"
-                ))
-
-        threading.Thread(target=scan_and_try, daemon=True, name="RL-CodeScan").start()
-
-    def _open_viewer(self, remote_info):
-        if self.viewer_window and self.viewer_window.winfo_exists():
-            self.viewer_window.lift(); return
         self.viewer_window = ViewerWindow(self, self.client, remote_info)
-        self.viewer_window.focus()
+        self.viewer_window.deiconify()
+        self.viewer_window.lift()
+        self.viewer_window.focus_force()
 
 
 def main():

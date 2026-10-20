@@ -251,6 +251,12 @@ def build(onefile=True, debug=False):
         "--hidden-import", "ipaddress",
         "--hidden-import", "zlib",
         "--hidden-import", "struct",
+        "--hidden-import", "base64",
+        "--hidden-import", "ctypes",
+        "--hidden-import", "ctypes.wintypes",
+        "--hidden-import", "urllib.request",
+        "--hidden-import", "urllib.parse",
+        "--hidden-import", "xml.etree.ElementTree",
 
         # ── Collect entire packages ───────────────────────────────────────
         "--collect-all", "PIL",

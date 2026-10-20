@@ -3,7 +3,7 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = [('core', 'core'), ('gui', 'gui')]
 binaries = []
-hiddenimports = ['tkinter', 'tkinter.ttk', 'tkinter.font', 'tkinter.messagebox', 'PIL._tkinter_finder', 'PIL.Image', 'PIL.ImageDraw', 'PIL.ImageFilter', 'PIL.ImageTk', 'mss', 'mss.windows', 'mss.linux', 'mss.darwin', 'pyautogui', 'pynput', 'pynput.mouse', 'pynput.keyboard', 'uuid', 'hashlib', 'ipaddress', 'zlib', 'struct']
+hiddenimports = ['tkinter', 'tkinter.ttk', 'tkinter.font', 'tkinter.messagebox', 'PIL._tkinter_finder', 'PIL.Image', 'PIL.ImageDraw', 'PIL.ImageFilter', 'PIL.ImageTk', 'mss', 'mss.windows', 'mss.linux', 'mss.darwin', 'pyautogui', 'pynput', 'pynput.mouse', 'pynput.keyboard', 'uuid', 'hashlib', 'ipaddress', 'zlib', 'struct', 'base64', 'ctypes', 'ctypes.wintypes', 'urllib.request', 'urllib.parse', 'xml.etree.ElementTree']
 tmp_ret = collect_all('PIL')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('mss')
@@ -46,6 +46,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    version='d:\\C\\anypy\\build\\version_info.txt',
-    icon=['d:\\C\\anypy\\assets\\icon.ico'],
+    version='C:/Users/Felipe Monteiro/Downloads/Compressed/remotelink-main/remotelink-main/build/version_info.txt',
+    icon=['C:/Users/Felipe Monteiro/Downloads/Compressed/remotelink-main/remotelink-main/assets/icon.ico'],
 )

@@ -1,21 +1,23 @@
 # RemoteLink
 
-Alternativa ao AnyDesk em Python puro — acesso remoto via rede local por codigo de acesso, hostname ou IP. Leve, portatil e sem dependencias externas de servidor.
+Alternativa ao AnyDesk em Python puro — acesso remoto via **Rede Local (LAN)** e **Rede Externa (Internet/WAN)** por código de acesso, Código Externo, hostname ou IP. Leve, portátil e com resposta direta de teclado e mouse igual ao AnyDesk.
 
 ---
 
 ## Recursos
 
-- **Codigo de Acesso Unico** — Cada maquina tem um codigo numerico `XXX-XXX` gerado a partir do hardware (MAC + hostname)
-- **Pre-visualizacao** — Veja sistema, IP e hostname do alvo antes de conectar
-- **3 modos de conexao:**
-  - Codigo de Acesso (`123-456`)
-  - IP direto (`192.168.1.50`)
-  - Hostname (`SERVIDOR01`)
-- **Descoberta Automatica** — Escaneia a rede local e lista maquinas com RemoteLink
-- **Servidor duplo embutido** — Cada instancia pode ser host e viewer simultaneamente
-- **Interface escura profissional** — Tema dark inspirado no GitHub
-- **Standalone .EXE** — Gere um executavel unico com PyInstaller (sem precisar de Python no alvo)
+- **Código de Acesso Único (`XXX-XXX`)** — Funciona tanto na **Rede Local (LAN)** quanto na **Rede Externa (Internet)** via Cloud Rendezvous criptografado + UPnP + Conexão Reversa (NAT Traversal)
+- **Código Externo Direto (`RL-XXXX-XXXX-XXXX` / `XXX-XXX@IP:PORTA`)** — Codifica o IP público, porta e código de acesso em um único token compacto
+- **UPnP IGD Automático** — Abre automaticamente as portas `52340` e `52341` no roteador ao iniciar o servidor (igual ao `upnp_forwarded` do AnyDesk)
+- **Teclado e Mouse Diretos (Estilo AnyDesk)** — Hook nativo Win32 (`WH_KEYBOARD_LL`) no Viewer e injeção direta via `SendInput` no Host (suporta arrastar e soltar, duplo clique nativo, `Alt+Tab`, tecla `Win`, acentuação ABNT2 e liberação automática de teclas presas)
+- **Modos de conexão:**
+  - Código de Acesso (`123-456` — LAN e Internet)
+  - Código Externo Direto (`RL-XXXX-XXXX-XXXX` ou `123-456@177.x.x.x`)
+  - IP direto ou `IP:Porta` (`192.168.1.50` ou `177.x.x.x:52340`)
+  - Hostname / DDNS (`SERVIDOR01` ou `meupc.ddns.net:52340`)
+- **Descoberta Automática** — Escaneia a rede local/VPN e consulta o registro externo automaticamente
+- **Qualidade Adaptativa para Rede Externa** — Ajusta compressão e resolução automaticamente em conexões WAN para manter latência zero no mouse e teclado
+- **Standalone .EXE** — Gere um executável único com PyInstaller (sem precisar de Python no alvo)
 
 ---
 
