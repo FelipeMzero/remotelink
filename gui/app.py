@@ -81,6 +81,7 @@ if _IS_WIN:
         _font_path = os.path.join(_root_dir, "assets", "fonts", "Outfit-VariableFont_wght.ttf")
         if os.path.exists(_font_path):
             ctypes.windll.gdi32.AddFontResourceExW(os.path.abspath(_font_path), 0x10, 0)
+        ctypes.windll.winmm.timeBeginPeriod(1)
     except Exception:
         pass
 
@@ -1538,6 +1539,7 @@ class ViewerWindow(tk.Toplevel):
         self._ready_image  = None
         self._ready_lock   = threading.Lock()
         self._frame_lock   = threading.Lock()
+        self._new_frame_ev = threading.Event()
         self._last_cw      = 1280
         self._last_ch      = 720
         self._quality_idx  = 0
@@ -1855,17 +1857,19 @@ class ViewerWindow(tk.Toplevel):
         with self._frame_lock:
             self._latest_raw = data
             self._fc += 1
+        self._new_frame_ev.set()
 
     def _frame_worker_loop(self):
         """Thread assíncrona dedicada que decodifica o JPEG e redimensiona sem travar o Tkinter."""
         from PIL import Image
         last_raw = None
         while self._enabled:
+            self._new_frame_ev.wait(timeout=0.03)
+            self._new_frame_ev.clear()
             with self._frame_lock:
                 raw = self._latest_raw
                 self._latest_raw = None
             if not raw or raw is last_raw:
-                time.sleep(0.003)
                 continue
             last_raw = raw
             try:
@@ -1879,7 +1883,7 @@ class ViewerWindow(tk.Toplevel):
                 nw = max(1, int(rw * sc))
                 nh = max(1, int(rh * sc))
                 if (nw, nh) != (rw, rh):
-                    img = img.resize((nw, nh), Image.BILINEAR)
+                    img = img.resize((nw, nh), Image.BOX if hasattr(Image, "BOX") else Image.NEAREST)
 
                 with self._ready_lock:
                     self._ready_image = (img, nw, nh)
@@ -1891,7 +1895,7 @@ class ViewerWindow(tk.Toplevel):
             return
         self._render_frame()
         if self._enabled and self.winfo_exists():
-            self.after(10, self._schedule_render)
+            self.after(8, self._schedule_render)
 
     def _render_frame(self):
         with self._ready_lock:

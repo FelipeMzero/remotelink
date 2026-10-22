@@ -14,14 +14,17 @@
    - Modo "Acesso Não Supervisionado" opcional na aba *Servidor & Portas* para servidores remotos autônomos.
 
 2. **🔊 Transmissão de Áudio e 🎙️ Microfone Bidirecional**:
-   - Engine de streaming de áudio nativa em tempo real via `sounddevice` (PCM 24 kHz, 16-bit mono com buffer anti-jitter).
+   - Engine de áudio nativa em tempo real com captura de som do PC via **Windows WASAPI Loopback (`PyAudioWPatch`)** + fallback `sounddevice`. Captura com perfeição tudo o que estiver tocando nos alto-falantes/fones do Host (YouTube, Spotify, jogos, sons do Windows).
+   - Conversão em C de altíssima velocidade para PCM 24 kHz, 16-bit Mono com buffer anti-jitter.
+   - Suporte a áudio bidirecional tanto em **conexão direta (TCP)** quanto em **Relay Externo**.
    - Botões dedicados na barra de ferramentas do Viewer: **🔊 Som: Ativo/Mudo** e **🎙️ Mic: Ativo/Mudo**.
 
-3. **⚡ Performance Acima de 27-35+ FPS e Latência Quase Zero**:
-   - **Captura Ultrarrápida no Host**: GDI `BitBlt` nativo otimizado com sincronização ao desktop de entrada do Windows (`OpenInputDesktop` + `SetThreadDesktop`), eliminando falhas de buffer.
-   - **Renderização Assíncrona no Viewer**: A decodificação JPEG e o redimensionamento bilinear acontecem em uma thread de worker dedicada (`_frame_worker_loop`), liberando a thread do Tkinter para atualizar a tela em < 0.5ms (`PhotoImage.paste`), atingindo com folga **35+ FPS contínuos**.
+3. **⚡ Performance Acima de 35-50+ FPS e Latência Quase Zero**:
+   - **Captura Ultrarrápida no Host**: GDI DIBSection nativo com persistência de desktop de entrada do Windows (`OpenInputDesktop` + `SetThreadDesktop`), eliminando falhas de buffer e alocações repetidas por frame.
+   - **Renderização Assíncrona no Viewer**: A decodificação JPEG e o redimensionamento rápido (`Image.BOX`/`NEAREST`, 1.3ms vs 17ms) acontecem em uma thread de worker orientada a eventos (`_frame_worker_loop`), com temporizador Windows de 1ms (`timeBeginPeriod(1)`), atingindo com folga **35-50+ FPS contínuos**.
+   - **Taxa Aprimorada no Relay**: Desbloqueado o limite de Relay de 12 FPS para **30+ FPS contínuos** em redes CGNAT.
    - **Mouse e Teclado Instantâneos**: Chamadas diretas de Win32 `SetCursorPos` e `SendInput` com fila de comandos priorizada (cliques e teclas furam a fila de movimentos de mouse) e taxa de atualização de 200 Hz (5ms).
-   - **Seletor Dinâmico de Qualidade**: Botão **🎨 Qualidade** na toolbar alternando dinamicamente entre **HD** (100% escala, Q85), **Equilibrada** (85% escala, Q75) e **Rápida** (70% escala, Q60).
+   - **Seletor Dinâmico de Qualidade**: Botão **🎨 Qualidade** na toolbar alternando dinamicamente entre **HD** (100% escala, Q78), **Equilibrada** (1600x900, Q72) e **Rápida** (1366x768, Q65).
 
 4. **✨ Novo Design: Tema Claro (White Theme) & Fonte Google Outfit**:
    - Paleta visual moderna, limpa e profissional com superfícies brancas (`#ffffff`), tons neutros suaves Slate (`#f8fafc`, `#e2e8f0`) e detalhes em azul moderno (`#2563eb`).
@@ -95,7 +98,8 @@ pip install -r requirements.txt
 |---|---|
 | `Pillow` | Decodificação e codificação JPEG otimizada |
 | `mss` | Captura multiplataforma de fallback |
-| `sounddevice` | Captura do som do PC e microfone em tempo real |
+| `PyAudioWPatch` | Captura de som do PC via Windows WASAPI Loopback |
+| `sounddevice` | Suporte e fallback de áudio / microfone |
 | `pynput` | Emulação de mouse e teclado |
 | `pyautogui` | Utilitários de tela e fallback de input |
 

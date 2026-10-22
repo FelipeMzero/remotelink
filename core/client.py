@@ -373,6 +373,17 @@ class RemoteLinkClient:
                             if now - self._last_ack_ts >= 3.0:
                                 self._last_ack_ts = now
                                 self._send_ctrl({"cmd": "ack", "session_id": self._session_id, "ts": ts})
+                elif topic == topics.get("audio_host") and self._running and self._relay_mode:
+                    if self._sound_enabled:
+                        if self._audio_playback is None:
+                            try:
+                                from core.audio import AudioPlayback
+                                self._audio_playback = AudioPlayback()
+                                self._audio_playback.start()
+                            except Exception:
+                                pass
+                        if self._audio_playback:
+                            self._audio_playback.write(payload)
             except Exception as e:
                 logger.debug(f"client relay msg err: {e}")
 
@@ -384,6 +395,7 @@ class RemoteLinkClient:
 
         relay.subscribe(topics["handshake"])
         relay.subscribe(topics["frame"])
+        relay.subscribe(topics["audio_host"])
         time.sleep(0.15)
 
         pow_nonce = 0
@@ -789,6 +801,12 @@ class RemoteLinkClient:
                     def _on_chunk(chunk: bytes):
                         if not self._running or not self._connected or not self._mic_enabled:
                             return
+                        if self._relay_mode and self._relay_sock and self._relay_sock.connected:
+                            try:
+                                self._relay_sock.publish(self._relay_topics["audio_viewer"], chunk)
+                            except Exception:
+                                pass
+                            return
                         sock = self._input_sock or self._frame_sock
                         if sock:
                             try:
@@ -921,8 +939,16 @@ class RemoteLinkClient:
                 if msg_type == 0x01 and self.on_frame:
                     self.on_frame(data, ts)
                 elif msg_type == 0x04:  # Áudio do host
-                    if self._sound_enabled and self._audio_playback:
-                        self._audio_playback.write(data)
+                    if self._sound_enabled:
+                        if self._audio_playback is None:
+                            try:
+                                from core.audio import AudioPlayback
+                                self._audio_playback = AudioPlayback()
+                                self._audio_playback.start()
+                            except Exception as e:
+                                logger.debug(f"AudioPlayback auto-start error: {e}")
+                        if self._audio_playback:
+                            self._audio_playback.write(data)
         except Exception as e:
             logger.debug(f"recv_loop: {e}")
         finally:

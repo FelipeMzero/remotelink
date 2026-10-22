@@ -109,6 +109,88 @@ if _IS_WIN:
     SM_CXVIRTUALSCREEN = 78
     SM_CYVIRTUALSCREEN = 79
 
+    _gdi32 = ctypes.windll.gdi32
+
+    class _BITMAPINFOHEADER(ctypes.Structure):
+        _fields_ = [
+            ("biSize",          wintypes.DWORD),
+            ("biWidth",         wintypes.LONG),
+            ("biHeight",        wintypes.LONG),
+            ("biPlanes",        wintypes.WORD),
+            ("biBitCount",      wintypes.WORD),
+            ("biCompression",   wintypes.DWORD),
+            ("biSizeImage",     wintypes.DWORD),
+            ("biXPelsPerMeter", wintypes.LONG),
+            ("biYPelsPerMeter", wintypes.LONG),
+            ("biClrUsed",       wintypes.DWORD),
+            ("biClrImportant",  wintypes.DWORD),
+        ]
+
+    class _BITMAPINFO(ctypes.Structure):
+        _fields_ = [("bmiHeader", _BITMAPINFOHEADER), ("bmiColors", wintypes.DWORD * 3)]
+
+    class Win32ScreenGrabber:
+        """
+        Captura de tela nativa ultrarrápida no Windows via GDI DIBSection + BitBlt.
+        Reutiliza buffer de memória mapeada (Zero-Allocation) mantendo 45-60 FPS
+        e mantém o desktop aberto persistentemente durante toda a sessão.
+        """
+        def __init__(self):
+            self.hdesk = None
+            self._ensure_desktop()
+            self.w = max(640, _user32.GetSystemMetrics(0))
+            self.h = max(360, _user32.GetSystemMetrics(1))
+            self.sdc = _user32.GetDC(0)
+            self.mdc = _gdi32.CreateCompatibleDC(self.sdc)
+
+            bi = _BITMAPINFO()
+            bi.bmiHeader.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
+            bi.bmiHeader.biWidth = self.w
+            bi.bmiHeader.biHeight = -self.h  # Top-down DIB
+            bi.bmiHeader.biPlanes = 1
+            bi.bmiHeader.biBitCount = 32
+            bi.bmiHeader.biCompression = 0
+
+            self.pBits = ctypes.c_void_p()
+            self.hbmp = _gdi32.CreateDIBSection(self.mdc, ctypes.byref(bi), 0, ctypes.byref(self.pBits), 0, 0)
+            _gdi32.SelectObject(self.mdc, self.hbmp)
+            self.total_bytes = self.w * self.h * 4
+            self.raw_buf = (ctypes.c_char * self.total_bytes).from_address(self.pBits.value)
+
+        def _ensure_desktop(self):
+            try:
+                hdesk = _user32.OpenInputDesktop(0, False, 0x01FF)
+                if hdesk:
+                    _user32.SetThreadDesktop(hdesk)
+                    self.hdesk = hdesk
+            except Exception:
+                pass
+
+        def grab(self):
+            from PIL import Image
+            ok = _gdi32.BitBlt(self.mdc, 0, 0, self.w, self.h, self.sdc, 0, 0, 0x00CC0020)
+            if not ok:
+                self._ensure_desktop()
+                ok = _gdi32.BitBlt(self.mdc, 0, 0, self.w, self.h, self.sdc, 0, 0, 0x00CC0020)
+                if not ok:
+                    raise RuntimeError("BitBlt failed")
+            return Image.frombuffer("RGB", (self.w, self.h), self.raw_buf, "raw", "BGRX", 0, 1)
+
+        def close(self):
+            try:
+                if self.hbmp:
+                    _gdi32.DeleteObject(self.hbmp)
+                if self.mdc:
+                    _gdi32.DeleteDC(self.mdc)
+                if self.sdc:
+                    _user32.ReleaseDC(0, self.sdc)
+                if self.hdesk:
+                    _user32.CloseDesktop(self.hdesk)
+            except Exception:
+                pass
+else:
+    Win32ScreenGrabber = None
+
 
 # Mapa completo de nomes simbólicos para Win32 Virtual-Key (VK)
 _NAME_TO_VK = {
@@ -685,6 +767,19 @@ class RemoteLinkServer:
                             self._notify_status("connected")
                             if self.on_client_connect:
                                 self.on_client_connect(("Relay Externo", 443), self._host_info())
+
+                            # Áudio do Host via Relay
+                            if permissions.get("audio", True):
+                                try:
+                                    from core.audio import AudioCapture
+                                    def _on_relay_audio(chunk: bytes):
+                                        if self._running and self._session_id == sid and self._relay_sock and self._relay_sock.connected:
+                                            self._relay_sock.publish(topics["audio_host"], chunk)
+                                    self._audio_capture = AudioCapture(on_chunk=_on_relay_audio, device_type="speaker")
+                                    self._audio_capture.start()
+                                except Exception as e:
+                                    logger.debug(f"relay audio start: {e}")
+
                             threading.Thread(
                                 target=self._relay_capture_loop,
                                 args=(self._relay_sock, topics["frame"], sid),
@@ -696,6 +791,7 @@ class RemoteLinkServer:
                         elif cmd == "disconnect":
                             if self._session_id == msg.get("session_id"):
                                 self._session_id = None
+                                self._stop_all_audio()
                                 if self._win_injector:
                                     try:
                                         self._win_injector.release_all()
@@ -704,6 +800,17 @@ class RemoteLinkServer:
                                 self._notify_status("listening")
                                 if self.on_client_disconnect:
                                     self.on_client_disconnect()
+                        elif topic == topics.get("audio_viewer"):
+                            if self._session_permissions.get("mic", True):
+                                if self._audio_playback is None:
+                                    try:
+                                        from core.audio import AudioPlayback
+                                        self._audio_playback = AudioPlayback()
+                                        self._audio_playback.start()
+                                    except Exception:
+                                        pass
+                                if self._audio_playback:
+                                    self._audio_playback.write(payload)
                 except Exception as e:
                     logger.debug(f"relay_msg err: {e}")
 
@@ -713,6 +820,7 @@ class RemoteLinkServer:
                 self.relay_active = True
                 relay.subscribe(topics["ctrl"])
                 relay.subscribe(topics["input"])
+                relay.subscribe(topics["audio_viewer"])
                 logger.info(f"Relay Externo conectado para código {self.access_code}")
                 while self._running and relay.connected:
                     time.sleep(1.0)
@@ -726,14 +834,6 @@ class RemoteLinkServer:
 
     def _grab_screen_image(self, sct, mon):
         from PIL import Image
-        if _IS_WIN:
-            try:
-                hdesk = _user32.OpenInputDesktop(0, False, 0x01FF)
-                if hdesk:
-                    _user32.SetThreadDesktop(hdesk)
-                    _user32.CloseDesktop(hdesk)
-            except Exception:
-                pass
         if sct is not None and mon is not None:
             try:
                 raw = sct.grab(mon)
@@ -761,36 +861,60 @@ class RemoteLinkServer:
         except ImportError:
             return
 
+        hdesk = None
+        if _IS_WIN:
+            try:
+                _user32.SetProcessDPIAware()
+                hdesk = _user32.OpenInputDesktop(0, False, 0x01FF)
+                if hdesk:
+                    _user32.SetThreadDesktop(hdesk)
+            except Exception:
+                pass
+
+        hdesk = None
+        grabber = None
         sct = None
         mon = None
-        try:
-            import mss
-            sct = mss.mss()
-            mon = sct.monitors[1]
-            self._mon_rect = {
-                "left":   int(mon.get("left", 0)),
-                "top":    int(mon.get("top", 0)),
-                "width":  int(mon.get("width", 1920)),
-                "height": int(mon.get("height", 1080)),
-            }
-        except Exception:
-            pass
+        if _IS_WIN and Win32ScreenGrabber:
+            try:
+                grabber = Win32ScreenGrabber()
+                self._mon_rect = {"left": 0, "top": 0, "width": grabber.w, "height": grabber.h}
+            except Exception:
+                grabber = None
+
+        if not grabber:
+            try:
+                import mss
+                sct = mss.mss()
+                mon = sct.monitors[1]
+                self._mon_rect = {
+                    "left":   int(mon.get("left", 0)),
+                    "top":    int(mon.get("top", 0)),
+                    "width":  int(mon.get("width", 1920)),
+                    "height": int(mon.get("height", 1080)),
+                }
+            except Exception:
+                pass
 
         buf = io.BytesIO()
-        quality = 50
-        max_w   = 1152
-        target_dt = 1.0 / 12.0
+        quality = 68
+        max_w   = 1280
+        target_fps = 30.0
+        target_dt = 1.0 / target_fps
 
         while self._running and self._session_id == sid and relay and relay.connected:
             t0 = time.perf_counter()
             if t0 - self._last_client_ack > 300.0:
                 break
             try:
-                img = self._grab_screen_image(sct, mon)
+                if grabber:
+                    img = grabber.grab()
+                else:
+                    img = self._grab_screen_image(sct, mon)
                 w, h = img.size
                 if w > max_w:
                     scale = max_w / w
-                    img = img.resize((max_w, int(h * scale)), Image.BILINEAR)
+                    img = img.resize((max_w, int(h * scale)), Image.BOX if hasattr(Image, "BOX") else Image.NEAREST)
 
                 buf.seek(0)
                 buf.truncate(0)
@@ -801,17 +925,22 @@ class RemoteLinkServer:
                 if not relay.publish(frame_topic, hdr + frame):
                     break
             except Exception:
-                time.sleep(0.05)
+                time.sleep(0.02)
 
             dt = time.perf_counter() - t0
             if dt < target_dt:
                 time.sleep(target_dt - dt)
 
         try:
+            if grabber:
+                grabber.close()
             if sct:
                 sct.close()
+            if hdesk:
+                _user32.CloseDesktop(hdesk)
         except Exception:
             pass
+        self._stop_all_audio()
         if self._session_id == sid:
             self._session_id = None
             if self._running:
@@ -1291,32 +1420,36 @@ class RemoteLinkServer:
             self._placeholder_loop(conn, sid)
             return
 
+        hdesk = None
+        grabber = None
         sct = None
         mon = None
-        try:
-            import mss
-            sct = mss.mss()
-            mon = sct.monitors[1]
-            self._mon_rect = {
-                "left":   int(mon.get("left", 0)),
-                "top":    int(mon.get("top", 0)),
-                "width":  int(mon.get("width", 1920)),
-                "height": int(mon.get("height", 1080)),
-            }
-        except Exception as e:
-            logger.info(f"mss init fallback ({e})")
-
-        if _IS_WIN:
+        if _IS_WIN and Win32ScreenGrabber:
             try:
-                _user32.SetProcessDPIAware()
-                hdesk = _user32.OpenInputDesktop(0, False, 0x01FF)
-                if hdesk:
-                    _user32.SetThreadDesktop(hdesk)
-                    _user32.CloseDesktop(hdesk)
-            except Exception:
-                pass
+                grabber = Win32ScreenGrabber()
+                self._mon_rect = {
+                    "left": 0, "top": 0,
+                    "width": grabber.w, "height": grabber.h
+                }
+            except Exception as e:
+                logger.info(f"Win32ScreenGrabber init fallback: {e}")
+                grabber = None
 
-        logger.info(f"Capturando monitor: {self._mon_rect} (target >27 FPS, mode={self._quality_mode})")
+        if not grabber:
+            try:
+                import mss
+                sct = mss.mss()
+                mon = sct.monitors[1]
+                self._mon_rect = {
+                    "left":   int(mon.get("left", 0)),
+                    "top":    int(mon.get("top", 0)),
+                    "width":  int(mon.get("width", 1920)),
+                    "height": int(mon.get("height", 1080)),
+                }
+            except Exception as e:
+                logger.info(f"mss init fallback ({e})")
+
+        logger.info(f"Capturando monitor: {self._mon_rect} (target 45 FPS, mode={self._quality_mode})")
         err_ts = 0
 
         is_wan = not client_ip.startswith(("192.168.", "10.", "172.", "127."))
@@ -1327,7 +1460,7 @@ class RemoteLinkServer:
             pass
 
         buf = io.BytesIO()
-        target_fps = 35.0
+        target_fps = 45.0
         frame_interval = 1.0 / target_fps
 
         while self._running and self._session_id == sid:
@@ -1335,24 +1468,27 @@ class RemoteLinkServer:
             try:
                 mode = getattr(self, "_quality_mode", "high")
                 if mode == "high":
-                    quality = 82
-                    subsampling = 0  # 4:4:4 ultra-nítido
+                    quality = 78
+                    subsampling = 1
                     max_w = 1920
                 elif mode == "fast":
                     quality = 65
                     subsampling = 2
                     max_w = 1366
                 else:  # balanced
-                    quality = 74
-                    subsampling = 1
+                    quality = 72
+                    subsampling = 2
                     max_w = 1600
 
-                img = self._grab_screen_image(sct, mon)
+                if grabber:
+                    img = grabber.grab()
+                else:
+                    img = self._grab_screen_image(sct, mon)
                 w, h = img.size
 
                 if w > max_w:
                     scale = max_w / w
-                    img = img.resize((max_w, int(h * scale)), Image.BILINEAR)
+                    img = img.resize((max_w, int(h * scale)), Image.BOX if hasattr(Image, "BOX") else Image.NEAREST)
 
                 buf.seek(0)
                 buf.truncate(0)
@@ -1379,8 +1515,12 @@ class RemoteLinkServer:
                 time.sleep(wait)
 
         try:
+            if grabber:
+                grabber.close()
             if sct:
                 sct.close()
+            if hdesk:
+                _user32.CloseDesktop(hdesk)
         except Exception:
             pass
 

@@ -220,9 +220,11 @@ def build(onefile=True, debug=False):
         "--add-data", f"gui{os.pathsep}gui",
         "--add-data", f"assets{os.pathsep}assets",
         "--collect-all", "sounddevice",
+        "--collect-all", "pyaudiowpatch",
 
         # ── Hidden imports ────────────────────────────────────────────────
         "--hidden-import", "sounddevice",
+        "--hidden-import", "pyaudiowpatch",
         # tkinter (sometimes missed by the hook)
         "--hidden-import", "tkinter",
         "--hidden-import", "tkinter.ttk",

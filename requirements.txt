@@ -17,6 +17,7 @@ pyautogui>=0.9.54
 # Optional: better performance
 numpy>=1.24.0
 
-# Audio & Microphone streaming
+# Audio & Microphone streaming (Som do PC via WASAPI Loopback + Microfone)
+PyAudioWPatch>=0.2.12.9
 sounddevice>=0.5.0
 

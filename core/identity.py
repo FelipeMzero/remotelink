@@ -623,10 +623,12 @@ class CloudRegistry:
         norm = normalize_code(code)
         digest = hashlib.sha256(f"remotelink-relay-v2-{norm}".encode()).hexdigest()[:20]
         return {
-            "ctrl":      f"rl_r/{digest}/ctrl",
-            "handshake": f"rl_r/{digest}/hs",
-            "frame":     f"rl_r/{digest}/frame",
-            "input":     f"rl_r/{digest}/input",
+            "ctrl":         f"rl_r/{digest}/ctrl",
+            "handshake":    f"rl_r/{digest}/hs",
+            "frame":        f"rl_r/{digest}/frame",
+            "input":        f"rl_r/{digest}/input",
+            "audio_host":   f"rl_r/{digest}/ah",
+            "audio_viewer": f"rl_r/{digest}/av",
         }
 
     @staticmethod
