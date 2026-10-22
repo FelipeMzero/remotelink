@@ -1873,12 +1873,14 @@ class ViewerWindow(tk.Toplevel):
                 continue
             last_raw = raw
             try:
+                if len(raw) < 16 or raw[:2] != b"\xff\xd8":
+                    continue
                 img = Image.open(io.BytesIO(raw))
                 rw, rh = img.size
                 self._rw, self._rh = rw, rh
 
-                cw = max(2, self._last_cw)
-                ch = max(2, self._last_ch)
+                cw = max(200, self._last_cw)
+                ch = max(150, self._last_ch)
                 sc = min(cw / rw, ch / rh)
                 nw = max(1, int(rw * sc))
                 nh = max(1, int(rh * sc))
@@ -1914,23 +1916,22 @@ class ViewerWindow(tk.Toplevel):
 
             cw = self._cv.winfo_width()
             ch = self._cv.winfo_height()
-            self._last_cw = cw
-            self._last_ch = ch
+            if cw > 50 and ch > 50:
+                self._last_cw = cw
+                self._last_ch = ch
+            else:
+                cw = self._last_cw
+                ch = self._last_ch
             cx, cy = cw // 2, ch // 2
 
-            if self._photo is not None and self._photo_size == (nw, nh):
-                self._photo.paste(img)
-                if self._cimg is not None:
-                    self._cv.coords(self._cimg, cx, cy)
+            self._photo = ImageTk.PhotoImage(img)
+            self._photo_size = (nw, nh)
+            if self._cimg is None:
+                self._cimg = self._cv.create_image(cx, cy, image=self._photo,
+                                                    anchor="center", tags="frame")
             else:
-                self._photo = ImageTk.PhotoImage(img)
-                self._photo_size = (nw, nh)
-                if self._cimg is None:
-                    self._cimg = self._cv.create_image(cx, cy, image=self._photo,
-                                                        anchor="center", tags="frame")
-                else:
-                    self._cv.itemconfig(self._cimg, image=self._photo)
-                    self._cv.coords(self._cimg, cx, cy)
+                self._cv.itemconfig(self._cimg, image=self._photo)
+                self._cv.coords(self._cimg, cx, cy)
 
             self._cv.tag_lower("frame")
             self._cv.tag_raise("cursor")
@@ -1979,6 +1980,8 @@ class ViewerWindow(tk.Toplevel):
     def _tr(self, cx, cy) -> tuple[int, int, float, float]:
         cw = self._cv.winfo_width()
         ch = self._cv.winfo_height()
+        if cw < 50 or ch < 50:
+            cw, ch = self._last_cw, self._last_ch
         if cw < 2 or ch < 2 or self._rw < 1 or self._rh < 1:
             return 0, 0, 0.0, 0.0
 

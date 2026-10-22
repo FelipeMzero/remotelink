@@ -129,6 +129,23 @@ if _IS_WIN:
     class _BITMAPINFO(ctypes.Structure):
         _fields_ = [("bmiHeader", _BITMAPINFOHEADER), ("bmiColors", wintypes.DWORD * 3)]
 
+    class _CURSORINFO(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.DWORD),
+            ("flags", wintypes.DWORD),
+            ("hCursor", wintypes.HICON),
+            ("ptScreenPos", wintypes.POINT),
+        ]
+
+    class _ICONINFO(ctypes.Structure):
+        _fields_ = [
+            ("fIcon", wintypes.BOOL),
+            ("xHotspot", wintypes.DWORD),
+            ("yHotspot", wintypes.DWORD),
+            ("hbmMask", wintypes.HBITMAP),
+            ("hbmColor", wintypes.HBITMAP),
+        ]
+
     class Win32ScreenGrabber:
         """
         Captura de tela nativa ultrarrápida no Windows via GDI DIBSection + BitBlt.
@@ -163,18 +180,52 @@ if _IS_WIN:
                 if hdesk:
                     _user32.SetThreadDesktop(hdesk)
                     self.hdesk = hdesk
+                    if hasattr(self, "sdc") and self.sdc:
+                        try:
+                            _user32.ReleaseDC(0, self.sdc)
+                        except Exception:
+                            pass
+                    self.sdc = _user32.GetDC(0)
             except Exception:
                 pass
 
         def grab(self):
             from PIL import Image
-            ok = _gdi32.BitBlt(self.mdc, 0, 0, self.w, self.h, self.sdc, 0, 0, 0x00CC0020)
+            # Tenta com CAPTUREBLT (0x40CC0020) para incluir janelas transparentes/camadas (Discord, Chrome)
+            ok = _gdi32.BitBlt(self.mdc, 0, 0, self.w, self.h, self.sdc, 0, 0, 0x40CC0020)
             if not ok:
-                self._ensure_desktop()
                 ok = _gdi32.BitBlt(self.mdc, 0, 0, self.w, self.h, self.sdc, 0, 0, 0x00CC0020)
                 if not ok:
-                    raise RuntimeError("BitBlt failed")
+                    self._ensure_desktop()
+                    ok = _gdi32.BitBlt(self.mdc, 0, 0, self.w, self.h, self.sdc, 0, 0, 0x00CC0020)
+                    if not ok:
+                        raise RuntimeError("BitBlt failed")
+
+            # Desenha o cursor nativo do Windows sobre a imagem capturada (estilo AnyDesk/Parsec)
+            try:
+                ci = _CURSORINFO()
+                ci.cbSize = ctypes.sizeof(_CURSORINFO)
+                if _user32.GetCursorInfo(ctypes.byref(ci)) and (ci.flags & 1):
+                    ii = _ICONINFO()
+                    if _user32.GetIconInfo(ci.hCursor, ctypes.byref(ii)):
+                        dx = ci.ptScreenPos.x - ii.xHotspot
+                        dy = ci.ptScreenPos.y - ii.yHotspot
+                        _user32.DrawIconEx(self.mdc, dx, dy, ci.hCursor, 0, 0, 0, 0, 3)
+                        if ii.hbmMask:
+                            _gdi32.DeleteObject(ii.hbmMask)
+                        if ii.hbmColor:
+                            _gdi32.DeleteObject(ii.hbmColor)
+            except Exception:
+                pass
+
             return Image.frombuffer("RGB", (self.w, self.h), self.raw_buf, "raw", "BGRX", 0, 1)
+
+        def get_sample(self) -> bytes:
+            """Amostragem em strided memoryview (0.2ms) para detecção instantânea de movimento na tela."""
+            try:
+                return bytes(memoryview(self.raw_buf)[::4096])
+            except Exception:
+                return b""
 
         def close(self):
             try:
@@ -478,12 +529,14 @@ class RemoteLinkServer:
         self._running     = False
         self._session_id  = None          # identifica sessão ativa
         self._frame_conn: Optional[socket.socket] = None
+        self._frame_send_lock = threading.Lock()
         self._relay_sock  = None
 
         # Geometria real do monitor capturado (para mapeamento exato do mouse)
         self._mon_rect = {"left": 0, "top": 0, "width": 1920, "height": 1080}
         self._win_injector = Win32InputInjector() if _IS_WIN else None
         self._last_client_ack = 0.0
+        self._last_input_time = 0.0
         self.upnp_status = {"ok": False, "external_ip": None}
         self.relay_active = False
 
@@ -901,17 +954,34 @@ class RemoteLinkServer:
         max_w   = 1280
         target_fps = 30.0
         target_dt = 1.0 / target_fps
+        last_sample = None
+        last_sent_ts = 0.0
 
         while self._running and self._session_id == sid and relay and relay.connected:
             t0 = time.perf_counter()
             if t0 - self._last_client_ack > 300.0:
                 break
             try:
+                img = None
                 if grabber:
-                    img = grabber.grab()
-                else:
+                    try:
+                        img = grabber.grab()
+                    except Exception:
+                        img = None
+                if img is None:
                     img = self._grab_screen_image(sct, mon)
                 w, h = img.size
+
+                now = time.perf_counter()
+                has_input = (now - self._last_input_time) < 0.8
+                sample = grabber.get_sample() if (grabber and hasattr(grabber, "get_sample")) else None
+
+                # Throttle quando estático para não saturar Relay MQTT
+                if sample is not None and last_sample is not None and not has_input:
+                    if sample == last_sample and (now - last_sent_ts) < 0.25:
+                        time.sleep(0.015)
+                        continue
+
                 if w > max_w:
                     scale = max_w / w
                     img = img.resize((max_w, int(h * scale)), Image.BOX if hasattr(Image, "BOX") else Image.NEAREST)
@@ -924,6 +994,9 @@ class RemoteLinkServer:
                 hdr = struct.pack(">BII", 0x01, len(frame), ts)
                 if not relay.publish(frame_topic, hdr + frame):
                     break
+
+                last_sample = sample
+                last_sent_ts = time.perf_counter()
             except Exception:
                 time.sleep(0.02)
 
@@ -1265,19 +1338,25 @@ class RemoteLinkServer:
                 logger.debug(f"input_loop: {e}")
                 break
 
+    def _send_frame_msg(self, conn: socket.socket, msg_type: int, payload: bytes, ts: int = 0) -> bool:
+        if not self._running or self._frame_conn is not conn:
+            return False
+        hdr = struct.pack(">BII", msg_type, len(payload), ts)
+        with self._frame_send_lock:
+            try:
+                conn.sendall(hdr + payload)
+                return True
+            except Exception:
+                return False
+
     def _start_audio_capture(self, conn: socket.socket):
         if self._audio_capture and self._audio_capture.is_running:
             return
         try:
             from core.audio import AudioCapture
             def _on_chunk(chunk: bytes):
-                if not self._running or self._frame_conn is not conn:
-                    return
-                try:
-                    hdr = struct.pack(">BI", 0x04, len(chunk))
-                    conn.sendall(hdr + chunk)
-                except Exception:
-                    pass
+                ts = int(time.time() * 1000) & 0xFFFFFFFF
+                self._send_frame_msg(conn, 0x04, chunk, ts)
 
             self._audio_capture = AudioCapture(on_chunk=_on_chunk, device_type="speaker")
             self._audio_capture.start()
@@ -1315,6 +1394,7 @@ class RemoteLinkServer:
         return m["left"] + int(ev.get("x", 0)), m["top"] + int(ev.get("y", 0))
 
     def _exec_input(self, ev: dict, ctrl):
+        self._last_input_time = time.perf_counter()
         if not self._session_permissions.get("keyboard_mouse", True):
             return
         t = ev.get("type")
@@ -1462,6 +1542,8 @@ class RemoteLinkServer:
         buf = io.BytesIO()
         target_fps = 45.0
         frame_interval = 1.0 / target_fps
+        last_sample = None
+        last_sent_ts = 0.0
 
         while self._running and self._session_id == sid:
             t0 = time.perf_counter()
@@ -1480,11 +1562,26 @@ class RemoteLinkServer:
                     subsampling = 2
                     max_w = 1600
 
+                img = None
                 if grabber:
-                    img = grabber.grab()
-                else:
+                    try:
+                        img = grabber.grab()
+                    except Exception:
+                        img = None
+                if img is None:
                     img = self._grab_screen_image(sct, mon)
                 w, h = img.size
+
+                now = time.perf_counter()
+                has_input = (now - self._last_input_time) < 0.8
+                sample = grabber.get_sample() if (grabber and hasattr(grabber, "get_sample")) else None
+
+                # Se a tela está estática e não houve ação recente, mantém taxa idle (~4 FPS)
+                # economizando CPU e zerando o bufferbloat/latência TCP da rede
+                if sample is not None and last_sample is not None and not has_input:
+                    if sample == last_sample and (now - last_sent_ts) < 0.25:
+                        time.sleep(0.012)
+                        continue
 
                 if w > max_w:
                     scale = max_w / w
@@ -1496,8 +1593,11 @@ class RemoteLinkServer:
                 frame = buf.getvalue()
 
                 ts  = int(time.time() * 1000) & 0xFFFFFFFF
-                hdr = struct.pack(">BII", 0x01, len(frame), ts)
-                conn.sendall(hdr + frame)
+                if not self._send_frame_msg(conn, 0x01, frame, ts):
+                    break
+
+                last_sample = sample
+                last_sent_ts = time.perf_counter()
 
             except (BrokenPipeError, ConnectionResetError, OSError):
                 break
