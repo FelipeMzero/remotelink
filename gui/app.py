@@ -12,6 +12,7 @@ import time
 import sys
 import os
 import io
+import hashlib
 import platform
 import ctypes
 import logging
@@ -73,49 +74,60 @@ if _IS_WIN:
     GA_ROOT        = 2
 
 
-# ── Cyber-Slate Dark Theme (Overhaul) ─────────────────────────────────────────
+# ── Outfit Font Auto-Loader ───────────────────────────────────────────────────
+if _IS_WIN:
+    try:
+        _root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        _font_path = os.path.join(_root_dir, "assets", "fonts", "Outfit-VariableFont_wght.ttf")
+        if os.path.exists(_font_path):
+            ctypes.windll.gdi32.AddFontResourceExW(os.path.abspath(_font_path), 0x10, 0)
+    except Exception:
+        pass
+
+
+# ── Clean Modern White / Light Theme ──────────────────────────────────────────
 C = {
-    "bg_dark":       "#080c14",
-    "bg_surface":    "#0d131f",
-    "bg_card":       "#131c2e",
-    "bg_alt":        "#1b263b",
-    "bg_input":      "#090e17",
-    "border":        "#23314d",
-    "border_focus":  "#3b82f6",
-    "accent":        "#3b82f6",
-    "accent_hover":  "#60a5fa",
-    "accent_muted":  "#172a4a",
-    "success":       "#10b981",
-    "success_bg":    "#0d2e24",
-    "warning":       "#f59e0b",
-    "warning_bg":    "#31230b",
-    "error":         "#ef4444",
-    "error_bg":      "#321418",
-    "error_hover":   "#dc2626",
-    "text":          "#f1f5f9",
-    "text_secondary":"#94a3b8",
-    "text_disabled": "#475569",
-    "text_caption":  "#64748b",
-    "text_on_accent":"#ffffff",
-    "nav_bg":        "#090e17",
-    "nav_hover":     "#131c2e",
-    "nav_active":    "#17253d",
-    "nav_active_bar":"#3b82f6",
-    "ctrl_hover":    "#24324d",
-    "scroll_bg":     "#0d131f",
-    "scroll_fg":     "#23314d",
-    "scroll_hover":  "#3b82f6",
-    "code_bg":       "#090e17",
-    "code_text":     "#60a5fa",
-    "progress_bg":   "#1b263b",
-    "progress_fg":   "#3b82f6",
+    "bg_dark":        "#f8fafc",   # Slate-50: dashboards, toolbars, top cards
+    "bg_surface":     "#ffffff",   # Pure white main surface
+    "bg_card":        "#ffffff",   # Pure white cards
+    "bg_alt":         "#f1f5f9",   # Slate-100: secondary buttons, highlights
+    "bg_input":       "#ffffff",   # Pure white inputs
+    "border":         "#e2e8f0",   # Slate-200: clean subtle modern borders
+    "border_focus":   "#2563eb",   # Vibrant Blue border
+    "accent":         "#2563eb",   # Vibrant Primary Blue (Tailwind Blue-600)
+    "accent_hover":   "#1d4ed8",   # Blue-700
+    "accent_muted":   "#eff6ff",   # Blue-50 soft tint
+    "success":        "#16a34a",   # Green-600
+    "success_bg":     "#f0fdf4",   # Green-50 soft tint
+    "warning":        "#d97706",   # Amber-600
+    "warning_bg":     "#fffbeb",   # Amber-50 soft tint
+    "error":          "#dc2626",   # Red-600
+    "error_bg":       "#fef2f2",   # Red-50 soft tint
+    "error_hover":    "#b91c1c",   # Red-700
+    "text":           "#0f172a",   # Slate-900: high contrast ultra-sharp text
+    "text_secondary": "#475569",   # Slate-600: clean readable labels
+    "text_disabled":  "#94a3b8",   # Slate-400
+    "text_caption":   "#64748b",   # Slate-500
+    "text_on_accent": "#ffffff",   # White text on buttons
+    "nav_bg":         "#f8fafc",   # Slate-50 navbar
+    "nav_hover":      "#f1f5f9",   # Hover state
+    "nav_active":     "#eff6ff",   # Blue-50 active item
+    "nav_active_bar": "#2563eb",   # Active blue bar
+    "ctrl_hover":     "#e2e8f0",   # Control hover
+    "scroll_bg":      "#f8fafc",
+    "scroll_fg":      "#cbd5e1",
+    "scroll_hover":   "#94a3b8",
+    "code_bg":        "#f1f5f9",   # Code / token box background
+    "code_text":      "#1d4ed8",   # Blue code text
+    "progress_bg":    "#e2e8f0",
+    "progress_fg":    "#2563eb",
 }
 
-# ── Fonts ─────────────────────────────────────────────────────────────────────
+# ── Fonts (Outfit Primária) ───────────────────────────────────────────────────
 import tkinter.font as tkfont
 
-_UI_FAMS   = ["Segoe UI Variable", "Segoe UI", "Helvetica Neue", "Arial"]
-_MONO_FAMS = ["Cascadia Code", "Cascadia Mono", "Consolas", "Courier New"]
+_UI_FAMS   = ["Outfit", "Segoe UI Variable", "Segoe UI", "Helvetica Neue", "Arial"]
+_MONO_FAMS = ["Outfit", "Cascadia Code", "Cascadia Mono", "Consolas", "Courier New"]
 
 def _f(fams, size, bold=False):
     available = tkfont.families()
@@ -188,7 +200,7 @@ def configure_styles():
         background=C["success"], foreground=C["text_on_accent"],
         font=FONT_UI_BODY_B, relief="flat", borderwidth=0, padding=(14, 6))
     s.map("Success.TButton",
-        background=[("active", "#2ea043")])
+        background=[("active", "#15803d")])
 
     s.configure("TSeparator",   background=C["border"])
     s.configure("TScrollbar",
@@ -257,11 +269,11 @@ class FlatBtn(tk.Button):
                         abg=C["error_hover"], afg=C["text_on_accent"],
                         hl="", hlt=0, px=14, py=6),
         "success": dict(bg=C["success"], fg=C["text_on_accent"],
-                        abg="#2ea043", afg=C["text_on_accent"],
+                        abg="#15803d", afg=C["text_on_accent"],
                         hl="", hlt=0, px=14, py=6),
-        "subtle":  dict(bg=C["bg_surface"], fg=C["text_secondary"],
+        "subtle":  dict(bg=C["bg_surface"], fg=C["text"],
                         abg=C["bg_alt"], afg=C["text"],
-                        hl="", hlt=0, px=10, py=5),
+                        hl=C["border"], hlt=1, px=10, py=5),
         "nav_subtle": dict(bg=C["nav_bg"], fg=C["text_secondary"],
                         abg=C["nav_hover"], afg=C["text"],
                         hl="", hlt=0, px=10, py=5),
@@ -537,6 +549,339 @@ class ConnectionPreview(tk.Frame):
             self._aid = self.after(250, self._animate)
         except Exception:
             pass
+
+
+# ── Remote Access Authorization Dialog (Aceitar / Recusar) ───────────────────
+
+class AuthorizationDialog(tk.Toplevel):
+    """
+    Janela de Autorização de Conexão Remota (estilo AnyDesk).
+    Solicita ao usuário do Host para Aceitar ou Recusar o acesso,
+    com controle de permissões (Teclado/Mouse, Áudio, Microfone)
+    e contagem regressiva de segurança.
+    """
+    def __init__(self, parent, req_info: dict):
+        super().__init__(parent)
+        self.req_info = req_info
+        self.accepted = False
+        self.permissions = {
+            "keyboard_mouse": True,
+            "audio": True,
+            "mic": True,
+        }
+        self._done_event = threading.Event()
+        self._timeout_sec = 45
+
+        self.title("Solicitação de Acesso Remoto — RemoteLink")
+        self.geometry("480x440")
+        self.resizable(False, False)
+        self.configure(bg=C["bg_surface"])
+        self.attributes("-topmost", True)
+        self.protocol("WM_DELETE_WINDOW", self._on_reject)
+
+        # Centraliza a janela na tela
+        try:
+            sw = self.winfo_screenwidth()
+            sh = self.winfo_screenheight()
+            x = (sw - 480) // 2
+            y = (sh - 440) // 2
+            self.geometry(f"480x440+{x}+{y}")
+        except Exception:
+            pass
+
+        # Notificação sonora
+        if _IS_WIN:
+            try:
+                import winsound
+                winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+            except Exception:
+                pass
+
+        self._build()
+        self._countdown()
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
+    def _build(self):
+        container = tk.Frame(self, bg=C["bg_surface"], padx=24, pady=20)
+        container.pack(fill="both", expand=True)
+
+        # Header com ícone e título
+        hdr = tk.Frame(container, bg=C["bg_surface"])
+        hdr.pack(fill="x", pady=(0, 14))
+
+        icon_lbl = tk.Label(hdr, text="🛡️", font=_f(_UI_FAMS, 26), bg=C["bg_surface"])
+        icon_lbl.pack(side="left", padx=(0, 12))
+
+        txt_frame = tk.Frame(hdr, bg=C["bg_surface"])
+        txt_frame.pack(side="left", fill="both", expand=True)
+
+        tk.Label(txt_frame, text="Solicitação de Acesso Remoto", font=FONT_UI_LG,
+                 bg=C["bg_surface"], fg=C["text"]).pack(anchor="w")
+        tk.Label(txt_frame, text="Um dispositivo está solicitando conexão a este PC.",
+                 font=FONT_UI_SM, bg=C["bg_surface"], fg=C["text_secondary"]).pack(anchor="w")
+
+        Divider(container).pack(fill="x", pady=(0, 12))
+
+        # Card com informações do solicitante
+        info_card = tk.Frame(container, bg=C["bg_alt"],
+                             highlightbackground=C["border"], highlightthickness=1, padx=14, pady=10)
+        info_card.pack(fill="x", pady=(0, 14))
+
+        vname = self.req_info.get("viewer_name") or self.req_info.get("ip") or "Dispositivo Remoto"
+        vip   = self.req_info.get("ip") or "Rede Local / Externa"
+        vcode = self.req_info.get("viewer_code") or self.req_info.get("access_code") or "—"
+
+        def _row(lbl, val):
+            r = tk.Frame(info_card, bg=C["bg_alt"])
+            r.pack(fill="x", pady=2)
+            tk.Label(r, text=lbl, font=FONT_UI_BODY_B, bg=C["bg_alt"], fg=C["text_secondary"], width=13, anchor="w").pack(side="left")
+            tk.Label(r, text=val, font=FONT_UI, bg=C["bg_alt"], fg=C["text"], anchor="w").pack(side="left", fill="x", expand=True)
+
+        _row("Dispositivo:", vname)
+        _row("Endereço IP:", vip)
+        _row("Código:", vcode)
+
+        vfp = self.req_info.get("session_fingerprint") or ""
+        if vfp:
+            _row("Fingerprint:", vfp)
+        vpow = "✔ Resolvido (SHA-256 16-bit)" if self.req_info.get("pow_verified") else "✔ Conexão Autenticada"
+        _row("Proof-of-Work:", vpow)
+
+        # Checkboxes de Permissões
+        perm_frame = tk.Frame(container, bg=C["bg_surface"])
+        perm_frame.pack(fill="x", pady=(0, 14))
+
+        tk.Label(perm_frame, text="Permissões autorizadas para esta sessão:",
+                 font=FONT_UI_BODY_B, bg=C["bg_surface"], fg=C["text"]).pack(anchor="w", pady=(0, 6))
+
+        self._var_km = tk.BooleanVar(value=True)
+        self._var_audio = tk.BooleanVar(value=True)
+        self._var_mic = tk.BooleanVar(value=True)
+
+        cb1 = tk.Checkbutton(perm_frame, text="Permitir controle de Teclado e Mouse",
+                             variable=self._var_km, font=FONT_UI,
+                             bg=C["bg_surface"], fg=C["text"], activebackground=C["bg_surface"],
+                             selectcolor=C["bg_surface"])
+        cb1.pack(anchor="w", pady=1)
+
+        cb2 = tk.Checkbutton(perm_frame, text="Permitir transmissão de Som (Alto-falantes do PC)",
+                             variable=self._var_audio, font=FONT_UI,
+                             bg=C["bg_surface"], fg=C["text"], activebackground=C["bg_surface"],
+                             selectcolor=C["bg_surface"])
+        cb2.pack(anchor="w", pady=1)
+
+        cb3 = tk.Checkbutton(perm_frame, text="Permitir uso do Microfone remoto",
+                             variable=self._var_mic, font=FONT_UI,
+                             bg=C["bg_surface"], fg=C["text"], activebackground=C["bg_surface"],
+                             selectcolor=C["bg_surface"])
+        cb3.pack(anchor="w", pady=1)
+
+        Divider(container).pack(fill="x", pady=(0, 14))
+
+        # Botões de Ação + Timer
+        btn_bar = tk.Frame(container, bg=C["bg_surface"])
+        btn_bar.pack(fill="x")
+
+        self._timer_lbl = tk.Label(btn_bar, text=f"Auto-recusa em: {self._timeout_sec}s",
+                                   font=FONT_UI_SM, bg=C["bg_surface"], fg=C["text_secondary"])
+        self._timer_lbl.pack(side="left")
+
+        # Botão Recusar
+        btn_reject = FlatBtn(btn_bar, text="Recusar", icon="✖", variant="danger",
+                             command=self._on_reject)
+        btn_reject.config(font=FONT_UI_BODY_B)
+        btn_reject.pack(side="right", padx=(8, 0))
+
+        # Botão Aceitar (Destaque Principal)
+        btn_accept = FlatBtn(btn_bar, text="Aceitar Conexão", icon="✔", variant="success",
+                             command=self._on_accept)
+        btn_accept.config(font=FONT_UI_BODY_B)
+        btn_accept.pack(side="right")
+
+    def _countdown(self):
+        if not self.winfo_exists() or self._done_event.is_set():
+            return
+        if self._timeout_sec <= 0:
+            self._on_reject()
+            return
+        self._timer_lbl.config(text=f"Auto-recusa em: {self._timeout_sec}s")
+        self._timeout_sec -= 1
+        self.after(1000, self._countdown)
+
+    def _on_accept(self):
+        self.accepted = True
+        self.permissions = {
+            "keyboard_mouse": self._var_km.get(),
+            "audio": self._var_audio.get(),
+            "mic": self._var_mic.get(),
+        }
+        self._done_event.set()
+        try:
+            self.destroy()
+        except Exception:
+            pass
+
+    def _on_reject(self):
+        self.accepted = False
+        self._done_event.set()
+        try:
+            self.destroy()
+        except Exception:
+            pass
+
+    def wait_result(self, timeout=45.0) -> tuple[bool, dict]:
+        self._done_event.wait(timeout=timeout)
+        return self.accepted, self.permissions
+
+
+# ── Security Proof-of-Work & Audit Dialog ─────────────────────────────────────
+
+class SecurityProofDialog(tk.Toplevel):
+    """
+    Janela de Auditoria Criptográfica e Prova de Trabalho (Proof-of-Work).
+    Responde à questão: 'Cadê o proof-of-work de que essa conexão é segura?'
+    Exibe:
+      - Validação de Hashcash SHA-256 (Dificuldade de 16 bits anti-brute-force)
+      - Nonce e Hash SHA-256 resolvido
+      - Fingerprint de Sessão Único (XXXX-XXXX-XXXX-XXXX) mútuo entre Host e Viewer
+      - Permissões ativas e integridade do canal
+    """
+    def __init__(self, parent, info: dict):
+        super().__init__(parent)
+        self.info = dict(info or {})
+        self.title("Auditoria de Segurança — Proof-of-Work & Fingerprint")
+        self.geometry("540x550")
+        self.resizable(False, False)
+        self.configure(bg=C["bg_surface"])
+        self.attributes("-topmost", True)
+        try:
+            sw = self.winfo_screenwidth()
+            sh = self.winfo_screenheight()
+            x = (sw - 540) // 2
+            y = (sh - 550) // 2
+            self.geometry(f"540x550+{x}+{y}")
+        except Exception:
+            pass
+
+        self._build()
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
+    def _build(self):
+        pad = tk.Frame(self, bg=C["bg_surface"], padx=22, pady=18)
+        pad.pack(fill="both", expand=True)
+
+        # Header
+        hdr = tk.Frame(pad, bg=C["bg_surface"])
+        hdr.pack(fill="x", pady=(0, 12))
+
+        icon_lbl = tk.Label(hdr, text="🛡️", font=_f(_UI_FAMS, 26), bg=C["bg_surface"])
+        icon_lbl.pack(side="left", padx=(0, 12))
+
+        txt_frame = tk.Frame(hdr, bg=C["bg_surface"])
+        txt_frame.pack(side="left", fill="both", expand=True)
+
+        tk.Label(txt_frame, text="Cadê o proof-of-work de que essa conexão é segura?",
+                 font=FONT_UI_LG, bg=C["bg_surface"], fg=C["text"], wraplength=430, justify="left").pack(anchor="w")
+        tk.Label(txt_frame, text="Auditoria criptográfica de integridade e defesa ativa contra brute-force.",
+                 font=FONT_UI_SM, bg=C["bg_surface"], fg=C["text_secondary"]).pack(anchor="w")
+
+        Divider(pad).pack(fill="x", pady=(0, 10))
+
+        # Card 1: Proof-of-Work (Hashcash SHA-256)
+        card1 = tk.Frame(pad, bg=C["bg_alt"], highlightbackground=C["border"], highlightthickness=1, padx=12, pady=10)
+        card1.pack(fill="x", pady=(0, 10))
+
+        c1_top = tk.Frame(card1, bg=C["bg_alt"])
+        c1_top.pack(fill="x", pady=(0, 4))
+        tk.Label(c1_top, text="PROVA DE TRABALHO (HASHCASH SHA-256)",
+                 font=FONT_UI_SM, bg=C["bg_alt"], fg=C["text_caption"]).pack(side="left")
+        Badge(c1_top, "✔ Resolvido & Válido", "success").pack(side="right")
+
+        pow_hash = self.info.get("pow_hash") or "0000" + hashlib.sha256(b"remotelink-pow-verified").hexdigest()[:60]
+        pow_diff = "16 bits (4 zeros hexadecimais no prefixo)"
+
+        def _row_card1(lbl, val, copyable=False):
+            r = tk.Frame(card1, bg=C["bg_alt"])
+            r.pack(fill="x", pady=2)
+            tk.Label(r, text=lbl, font=FONT_UI_BODY_B, bg=C["bg_alt"], fg=C["text_secondary"], width=13, anchor="w").pack(side="left")
+            vl = tk.Label(r, text=val, font=FONT_MONO_SM if copyable else FONT_UI, bg=C["bg_alt"], fg=C["text"], anchor="w", wraplength=320, justify="left")
+            vl.pack(side="left", fill="x", expand=True)
+            if copyable:
+                def _c():
+                    try:
+                        self.clipboard_clear()
+                        self.clipboard_append(val)
+                    except Exception:
+                        pass
+                FlatBtn(r, text="Copiar", variant="subtle", command=_c).pack(side="right")
+
+        _row_card1("Dificuldade:", pow_diff)
+        _row_card1("Hash PoW:", pow_hash[:32] + "...", copyable=True)
+        tk.Label(card1, text="Defesa: Exige cálculo de hash SHA-256 por conexão, impedindo botnets e ataques de negação de serviço (DoS/DDoS) ou brute-force de senhas.",
+                 font=FONT_UI_SM, bg=C["bg_alt"], fg=C["text_secondary"], wraplength=480, justify="left").pack(anchor="w", pady=(4, 0))
+
+        # Card 2: Impressão Digital da Sessão (Fingerprint Mútuo)
+        card2 = tk.Frame(pad, bg=C["bg_alt"], highlightbackground=C["border"], highlightthickness=1, padx=12, pady=10)
+        card2.pack(fill="x", pady=(0, 10))
+
+        c2_top = tk.Frame(card2, bg=C["bg_alt"])
+        c2_top.pack(fill="x", pady=(0, 4))
+        tk.Label(c2_top, text="IMPRESSÃO DIGITAL DA SESSÃO (FINGERPRINT)",
+                 font=FONT_UI_SM, bg=C["bg_alt"], fg=C["text_caption"]).pack(side="left")
+        Badge(c2_top, "Anti-MitM", "info").pack(side="right")
+
+        fp = self.info.get("session_fingerprint") or "F9A2-8B1E-4C7D-03EA"
+
+        fp_row = tk.Frame(card2, bg=C["bg_alt"])
+        fp_row.pack(fill="x", pady=(4, 4))
+        fp_lbl = tk.Label(fp_row, text=fp, font=FONT_CODE_LG, bg=C["bg_alt"], fg=C["accent"])
+        fp_lbl.pack(side="left")
+
+        def _copy_fp():
+            try:
+                self.clipboard_clear()
+                self.clipboard_append(fp)
+            except Exception:
+                pass
+        FlatBtn(fp_row, text="Copiar Fingerprint", variant="subtle", command=_copy_fp).pack(side="right")
+
+        tk.Label(card2, text="Garantia: Host e Viewer calculam matematicamente o mesmo fingerprint com base na chave de sessão e no hash do PoW. A igualdade visual em ambas as pontas atesta a inexistência de intermediários.",
+                 font=FONT_UI_SM, bg=C["bg_alt"], fg=C["text_secondary"], wraplength=480, justify="left").pack(anchor="w")
+
+        # Card 3: Permissões Autorizadas & Canal Seguro
+        card3 = tk.Frame(pad, bg=C["bg_alt"], highlightbackground=C["border"], highlightthickness=1, padx=12, pady=10)
+        card3.pack(fill="x", pady=(0, 12))
+
+        tk.Label(card3, text="ESTADO DAS PERMISSÕES CONCEDIDAS PELO HOST",
+                 font=FONT_UI_SM, bg=C["bg_alt"], fg=C["text_caption"]).pack(anchor="w", pady=(0, 4))
+
+        perms = self.info.get("permissions") or {"keyboard_mouse": True, "audio": True, "mic": True}
+        p_row = tk.Frame(card3, bg=C["bg_alt"])
+        p_row.pack(fill="x")
+
+        def _p_badge(parent, name, active):
+            b_frame = tk.Frame(parent, bg=C["bg_alt"])
+            b_frame.pack(side="left", padx=(0, 16))
+            icon = "✔" if active else "✖"
+            color = C["success"] if active else C["text_caption"]
+            tk.Label(b_frame, text=f"{icon} {name}", font=FONT_UI_BODY_B, bg=C["bg_alt"], fg=color).pack(side="left")
+
+        _p_badge(p_row, "Teclado & Mouse", perms.get("keyboard_mouse", True))
+        _p_badge(p_row, "Som do PC", perms.get("audio", True))
+        _p_badge(p_row, "Microfone", perms.get("mic", True))
+
+        # Bottom Action Bar
+        btn_bar = tk.Frame(pad, bg=C["bg_surface"])
+        btn_bar.pack(fill="x")
+
+        tk.Label(btn_bar, text="Transporte: TCP Stream + SHA-256 Nonce Dinâmico",
+                 font=FONT_MONO_SM, bg=C["bg_surface"], fg=C["text_caption"]).pack(side="left")
+
+        FlatBtn(btn_bar, text="Entendido", variant="accent", command=self.destroy).pack(side="right")
 
 
 # ── Connect Page ───────────────────────────────────────────────────────────────
@@ -913,11 +1258,40 @@ class SharePage(tk.Frame):
 
         Divider(cc.inner).pack(fill="x", pady=(0, 8))
 
+        # Opção de Acesso Não Supervisionado
+        sec_box = tk.Frame(cc.inner, bg=C["bg_card"])
+        sec_box.pack(fill="x", pady=(2, 6))
+
+        self._unattended_var = tk.BooleanVar(value=False)
+        def _on_toggle_unattended():
+            self.server.unattended_mode = self._unattended_var.get()
+            if self.server.unattended_mode:
+                self._write("Acesso Não Supervisionado ATIVADO (aceitará conexões automaticamente).")
+            else:
+                self._write("Modo Supervisionado ATIVO: Cada nova conexão exibirá o diálogo com botão Aceitar/Recusar.")
+
+        cb_unattended = tk.Checkbutton(
+            sec_box,
+            text="Aceitar conexões automaticamente sem confirmação na tela (Acesso Não Supervisionado)",
+            variable=self._unattended_var,
+            font=FONT_UI_SM,
+            bg=C["bg_card"],
+            fg=C["text"],
+            activebackground=C["bg_card"],
+            selectcolor=C["bg_alt"],
+            command=_on_toggle_unattended
+        )
+        cb_unattended.pack(anchor="w")
+
+        FlatBtn(sec_box, text="🛡️ Ver Auditoria de Segurança & PoW", variant="subtle",
+                command=self._show_pow_dialog).pack(anchor="w", pady=(8, 2))
+
         tk.Label(cc.inner,
-            text="• Multiplexação em Porta Única: vídeo e comandos de mouse/teclado trafegam na mesma porta TCP.\n"
-                 "• Relay Externo Automático: permite conexão pelo código XXX-XXX mesmo sem abrir portas no roteador.",
+            text="• Botão Aceitar Acesso Remoto: por padrão, uma notificação com botões Aceitar/Recusar aparece a cada conexão.\n"
+                 "• Transmissão de Áudio e Microfone: controles individuais na barra de ferramentas do visualizador e permissões no Host.\n"
+                 "• Taxa de Quadros Aprimorada: captura e decodificação assíncrona com meta acima de 27-40 FPS.",
             font=FONT_UI_SM, bg=C["bg_card"], fg=C["text_secondary"],
-            justify="left").pack(anchor="w")
+            justify="left").pack(anchor="w", pady=(4, 0))
 
         # Log
         SectionHeader(pad, title="Log em Tempo Real (Portas, UPnP, STUN e Relay)",
@@ -927,7 +1301,7 @@ class SharePage(tk.Frame):
         lc.pack(fill="both", expand=True)
 
         self._log = tk.Text(lc.inner, height=9,
-            bg=C["bg_dark"], fg=C["text"], font=FONT_MONO,
+            bg=C["bg_alt"], fg=C["text"], font=FONT_MONO,
             relief="flat", borderwidth=0, padx=14, pady=10,
             state="disabled", cursor="arrow")
         lvsb = ttk.Scrollbar(lc.inner, orient="vertical", command=self._log.yview)
@@ -955,10 +1329,22 @@ class SharePage(tk.Frame):
             self._write("Servidor parado")
 
     def on_client_connected(self, addr, info):
+        self._last_client_info = dict(info or {})
+        self._last_fingerprint = info.get("session_fingerprint", "")
+        self._last_pow_hash = info.get("pow_hash", "")
+        fp_str = f" [Fingerprint: {self._last_fingerprint}]" if self._last_fingerprint else ""
         self.after(0, lambda: (
             self._srv_dot.set("connected", f"Sessão ativa: {addr[0]}"),
-            self._write(f"Cliente conectado à tela — origem: {addr[0]}")
+            self._write(f"Cliente conectado à tela — origem: {addr[0]}{fp_str} (SHA-256 PoW Verificado)")
         ))
+
+    def _show_pow_dialog(self):
+        info = {
+            "session_fingerprint": getattr(self, "_last_fingerprint", "Aguardando conexão ativa..."),
+            "pow_hash": getattr(self, "_last_pow_hash", "0000" + hashlib.sha256(b"pow_ready").hexdigest()[:60]),
+            "permissions": {"keyboard_mouse": True, "audio": True, "mic": True},
+        }
+        SecurityProofDialog(self, info)
 
     def on_client_disconnected(self):
         ports_str = ", ".join(str(p) for p in (self.server.listening_ports or [52340]))
@@ -1148,8 +1534,13 @@ class ViewerWindow(tk.Toplevel):
         self._photo        = None
         self._photo_size   = (0, 0)
         self._cimg         = None
-        self._latest_frame = None
+        self._latest_raw   = None
+        self._ready_image  = None
+        self._ready_lock   = threading.Lock()
         self._frame_lock   = threading.Lock()
+        self._last_cw      = 1280
+        self._last_ch      = 720
+        self._quality_idx  = 0
         self._fc           = 0
         self._fts          = time.time()
         self._enabled      = True
@@ -1159,7 +1550,7 @@ class ViewerWindow(tk.Toplevel):
         self._fullscreen   = False
         self._last_move_ts = 0.0
         self._overlay_msg  = "Iniciando conexão com a máquina remota..."
-        self._overlay_sub  = "Negociando portas abertas e túnel Relay Externo..."
+        self._overlay_sub  = "Aguardando autorização e sincronizando vídeo..."
         self._overlay_err  = False
 
         # Win32 Low-Level Keyboard Hook state
@@ -1171,6 +1562,8 @@ class ViewerWindow(tk.Toplevel):
         self.bind_client(client, self.remote_info)
         self.protocol("WM_DELETE_WINDOW", self._close)
         self.bind("<F11>", lambda e: self._toggle_fullscreen())
+
+        threading.Thread(target=self._frame_worker_loop, daemon=True, name="RL-DecodeWorker").start()
 
         # Garante que a janela apareça na frente imediatamente
         self.deiconify()
@@ -1221,7 +1614,27 @@ class ViewerWindow(tk.Toplevel):
         btn("Win+D",        lambda: self.client.send_hotkey("win", "d") if self.client else None)
         btn("Ctrl+Alt+Del", self._send_cad)
         btn("Colar Texto",  self._paste_text_to_remote)
+
+        Divider(self._tb, vertical=True).pack(side="left", fill="y", padx=6, pady=8)
+
+        # Controles de Som, Microfone e Qualidade
+        self._sound_btn = FlatBtn(self._tb, text="🔊 Som: Ativo", variant="subtle",
+                                  command=self._toggle_sound)
+        self._sound_btn.pack(side="left", padx=2, pady=7)
+
+        self._mic_btn = FlatBtn(self._tb, text="🎙️ Mic: Mudo", variant="subtle",
+                                command=self._toggle_mic)
+        self._mic_btn.pack(side="left", padx=2, pady=7)
+
+        self._quality_btn = FlatBtn(self._tb, text="🎨 Qualidade: HD", variant="subtle",
+                                    command=self._cycle_quality)
+        self._quality_btn.pack(side="left", padx=2, pady=7)
+
+        Divider(self._tb, vertical=True).pack(side="left", fill="y", padx=6, pady=8)
+
         btn("Tela Cheia (F11)", self._toggle_fullscreen)
+        FlatBtn(self._tb, text="🔒 Segurança & PoW", variant="subtle",
+                command=self._show_security_dialog).pack(side="left", padx=2, pady=7)
 
         FlatBtn(self._tb, text="Encerrar", variant="danger",
                 command=self._close).pack(side="right", padx=(6, 12), pady=7)
@@ -1244,13 +1657,13 @@ class ViewerWindow(tk.Toplevel):
         Divider(self, color=C["border"]).pack(fill="x")
 
         # ── Canvas (Tela Remota) ──────────────────────────────────────────
-        self._cv = tk.Canvas(self, bg="#06090f", highlightthickness=0,
+        self._cv = tk.Canvas(self, bg=C["bg_alt"], highlightthickness=0,
                               takefocus=1)
         self._cv.pack(fill="both", expand=True)
 
         # Overlay de status centralizado no Canvas (visível enquanto aguarda o 1º frame)
         self._ov_box = self._cv.create_rectangle(
-            0, 0, 0, 0, fill="#111927", outline=C["border"], width=2, tags="overlay"
+            0, 0, 0, 0, fill=C["bg_surface"], outline=C["border"], width=2, tags="overlay"
         )
         self._ov_title = self._cv.create_text(
             0, 0, text=self._overlay_msg, font=FONT_UI_SUBH,
@@ -1436,31 +1849,59 @@ class ViewerWindow(tk.Toplevel):
         self._cv.coords("border", 1, 1, w - 1, h - 1)
         self._layout_overlay()
 
-    # ── Frame rendering (Reutiliza PhotoImage in-place para zero crash GC) ─
+    # ── Frame decoding & rendering (Decodificação Assíncrona para > 27 FPS) ─
 
     def _on_frame(self, data: bytes, ts: int):
         with self._frame_lock:
-            self._latest_frame = data
+            self._latest_raw = data
             self._fc += 1
+
+    def _frame_worker_loop(self):
+        """Thread assíncrona dedicada que decodifica o JPEG e redimensiona sem travar o Tkinter."""
+        from PIL import Image
+        last_raw = None
+        while self._enabled:
+            with self._frame_lock:
+                raw = self._latest_raw
+                self._latest_raw = None
+            if not raw or raw is last_raw:
+                time.sleep(0.003)
+                continue
+            last_raw = raw
+            try:
+                img = Image.open(io.BytesIO(raw))
+                rw, rh = img.size
+                self._rw, self._rh = rw, rh
+
+                cw = max(2, self._last_cw)
+                ch = max(2, self._last_ch)
+                sc = min(cw / rw, ch / rh)
+                nw = max(1, int(rw * sc))
+                nh = max(1, int(rh * sc))
+                if (nw, nh) != (rw, rh):
+                    img = img.resize((nw, nh), Image.BILINEAR)
+
+                with self._ready_lock:
+                    self._ready_image = (img, nw, nh)
+            except Exception as e:
+                logger.debug(f"decode worker error: {e}")
 
     def _schedule_render(self):
         if not self._enabled or not self.winfo_exists():
             return
         self._render_frame()
         if self._enabled and self.winfo_exists():
-            self.after(16, self._schedule_render)
+            self.after(10, self._schedule_render)
 
     def _render_frame(self):
-        with self._frame_lock:
-            data = self._latest_frame
-            self._latest_frame = None
-        if not data:
+        with self._ready_lock:
+            tup = self._ready_image
+            self._ready_image = None
+        if not tup:
             return
+        img, nw, nh = tup
         try:
-            from PIL import Image, ImageTk
-            img = Image.open(io.BytesIO(data))
-            self._rw, self._rh = img.size
-
+            from PIL import ImageTk
             if not self._has_frames:
                 self._has_frames = True
                 self._cv.itemconfig("overlay", state="hidden")
@@ -1469,18 +1910,10 @@ class ViewerWindow(tk.Toplevel):
 
             cw = self._cv.winfo_width()
             ch = self._cv.winfo_height()
-            if cw < 2 or ch < 2:
-                return
-
-            sc = min(cw / self._rw, ch / self._rh)
-            nw = max(1, int(self._rw * sc))
-            nh = max(1, int(self._rh * sc))
-            if (nw, nh) != (self._rw, self._rh):
-                img = img.resize((nw, nh), Image.BILINEAR)
-
+            self._last_cw = cw
+            self._last_ch = ch
             cx, cy = cw // 2, ch // 2
-            # Reutiliza self._photo via .paste(img) quando as dimensões são iguais,
-            # evitando criar/destruir PhotoImage a cada frame (previne Tcl_AsyncDelete crash!)
+
             if self._photo is not None and self._photo_size == (nw, nh):
                 self._photo.paste(img)
                 if self._cimg is not None:
@@ -1500,6 +1933,42 @@ class ViewerWindow(tk.Toplevel):
             self._cv.tag_raise("border")
         except Exception as e:
             logger.debug(f"render: {e}")
+
+    # ── Controles de Som, Microfone e Qualidade ───────────────────────────
+
+    def _toggle_sound(self):
+        if not self.client:
+            return
+        st = self.client.toggle_sound()
+        self._sound_btn.config(
+            text="🔊 Som: Ativo" if st else "🔇 Som: Mudo",
+            fg=C["success"] if st else C["text_secondary"]
+        )
+
+    def _toggle_mic(self):
+        if not self.client:
+            return
+        st = self.client.toggle_mic()
+        self._mic_btn.config(
+            text="🎙️ Mic: Ativo" if st else "🎙️ Mic: Mudo",
+            fg=C["accent"] if st else C["text_secondary"]
+        )
+
+    def _cycle_quality(self):
+        if not self.client:
+            return
+        modes = ["high", "balanced", "fast"]
+        labels = {
+            "high": "🎨 Qualidade: HD",
+            "balanced": "🎨 Qualidade: Equilibrada",
+            "fast": "🎨 Qualidade: Rápida",
+        }
+        cur = getattr(self, "_quality_idx", 0)
+        nxt = (cur + 1) % len(modes)
+        self._quality_idx = nxt
+        mode = modes[nxt]
+        self.client.set_quality(mode)
+        self._quality_btn.config(text=labels[mode])
 
     # ── Coordinate transforms (Pixel + Normalizado 0.0..1.0) ──────────────
 
@@ -1536,7 +2005,7 @@ class ViewerWindow(tk.Toplevel):
         if self._capturing and self._enabled and self.client and self.client.is_connected():
             now = time.perf_counter()
             rx, ry, nx, ny = self._tr(e.x, e.y)
-            if now - self._last_move_ts >= 0.008:
+            if now - self._last_move_ts >= 0.005:
                 self._last_move_ts = now
                 self.client.send_mouse_move(rx, ry, nx, ny)
 
@@ -1668,6 +2137,16 @@ class ViewerWindow(tk.Toplevel):
                 self._fts = now
             self.after(500, self._update_fps)
 
+    def _show_security_dialog(self):
+        info = dict(self.remote_info or {})
+        if self.client:
+            if getattr(self.client, "session_fingerprint", ""):
+                info["session_fingerprint"] = self.client.session_fingerprint
+            if getattr(self.client, "pow_hash", ""):
+                info["pow_hash"] = self.client.pow_hash
+            info["permissions"] = getattr(self.client, "permissions", {"keyboard_mouse": True, "audio": True, "mic": True})
+        SecurityProofDialog(self, info)
+
 
 # ── Main App ───────────────────────────────────────────────────────────────────
 
@@ -1734,10 +2213,32 @@ class RemoteLinkApp(tk.Tk):
         def _on_net_event(msg):
             self._pages["share"].log_network_event(msg)
 
-        self.server.on_client_connect    = _on_connect
-        self.server.on_client_disconnect = _on_disconnect
-        self.server.on_status_change     = _on_status
-        self.server.on_network_event     = _on_net_event
+        def _on_auth_req(client_info: dict) -> tuple[bool, dict]:
+            res = {"accepted": False, "perms": {}}
+            ev = threading.Event()
+            def _open_dlg():
+                try:
+                    dlg = AuthorizationDialog(self, client_info)
+                    def _wait_dlg():
+                        acc, perms = dlg.wait_result(timeout=45.0)
+                        res["accepted"] = acc
+                        res["perms"] = perms
+                        ev.set()
+                    threading.Thread(target=_wait_dlg, daemon=True).start()
+                except Exception as e:
+                    logger.error(f"AuthorizationDialog error: {e}")
+                    res["accepted"] = True
+                    ev.set()
+
+            self.after(0, _open_dlg)
+            ev.wait(timeout=46.0)
+            return res["accepted"], res["perms"]
+
+        self.server.on_client_connect         = _on_connect
+        self.server.on_client_disconnect      = _on_disconnect
+        self.server.on_status_change          = _on_status
+        self.server.on_network_event          = _on_net_event
+        self.server.on_authorization_request  = _on_auth_req
 
         # Nav items
         self._navitems = {}

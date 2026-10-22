@@ -1,14 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('core', 'core'), ('gui', 'gui')]
+datas = [('core', 'core'), ('gui', 'gui'), ('assets', 'assets')]
 binaries = []
-hiddenimports = ['tkinter', 'tkinter.ttk', 'tkinter.font', 'tkinter.messagebox', 'PIL._tkinter_finder', 'PIL.Image', 'PIL.ImageDraw', 'PIL.ImageFilter', 'PIL.ImageTk', 'mss', 'mss.windows', 'mss.linux', 'mss.darwin', 'pyautogui', 'pynput', 'pynput.mouse', 'pynput.keyboard', 'uuid', 'hashlib', 'ipaddress', 'zlib', 'struct', 'base64', 'ctypes', 'ctypes.wintypes', 'urllib.request', 'urllib.parse', 'xml.etree.ElementTree']
+hiddenimports = ['tkinter', 'tkinter.ttk', 'tkinter.font', 'tkinter.messagebox', 'PIL._tkinter_finder', 'PIL.Image', 'PIL.ImageDraw', 'PIL.ImageFilter', 'PIL.ImageTk', 'mss', 'mss.windows', 'mss.linux', 'mss.darwin', 'pyautogui', 'pynput', 'pynput.mouse', 'pynput.keyboard', 'uuid', 'hashlib', 'ipaddress', 'zlib', 'struct', 'base64', 'ctypes', 'ctypes.wintypes', 'urllib.request', 'urllib.parse', 'xml.etree.ElementTree', 'sounddevice']
 tmp_ret = collect_all('PIL')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('mss')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('pyautogui')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('sounddevice')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
@@ -46,6 +48,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    version='C:/Users/Felipe Monteiro/Downloads/Compressed/remotelink-main/remotelink-main/build/version_info.txt',
-    icon=['C:/Users/Felipe Monteiro/Downloads/Compressed/remotelink-main/remotelink-main/assets/icon.ico'],
+    version='build/version_info.txt',
+    icon=['assets/icon.ico'],
 )

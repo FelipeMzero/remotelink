@@ -218,8 +218,11 @@ def build(onefile=True, debug=False):
         # Separator is ; on Windows, : on Unix
         "--add-data", f"core{os.pathsep}core",
         "--add-data", f"gui{os.pathsep}gui",
+        "--add-data", f"assets{os.pathsep}assets",
+        "--collect-all", "sounddevice",
 
         # ── Hidden imports ────────────────────────────────────────────────
+        "--hidden-import", "sounddevice",
         # tkinter (sometimes missed by the hook)
         "--hidden-import", "tkinter",
         "--hidden-import", "tkinter.ttk",

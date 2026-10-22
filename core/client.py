@@ -14,6 +14,7 @@ import json
 import time
 import uuid
 import logging
+import platform
 import re
 import queue
 from typing import Callable, Optional
@@ -182,6 +183,14 @@ class RemoteLinkClient:
         self.remote_info: Optional[dict] = None
         self._session_id  = ""
         self._last_ack_ts = 0.0
+        self.session_fingerprint = ""
+        self.pow_hash = ""
+        self.permissions: dict = {"keyboard_mouse": True, "audio": True, "mic": True}
+        self._sound_enabled: bool = True
+        self._mic_enabled: bool = False
+        self._audio_capture = None
+        self._audio_playback = None
+        self._quality_mode: str = "high"
 
     def _start_workers(self, start_recv: bool = True):
         while not self._input_queue.empty():
@@ -214,15 +223,32 @@ class RemoteLinkClient:
                 pass
             fsock.connect((ip, port))
 
+            pow_nonce = 0
+            pow_hash = ""
+            try:
+                from core.crypto import generate_pow_challenge, solve_proof_of_work
+                pow_ch = generate_pow_challenge(normalize_code(access_code))
+                pow_nonce, pow_hash = solve_proof_of_work(pow_ch, difficulty=4)
+            except Exception as e:
+                logger.debug(f"pow error: {e}")
+                pow_ch = ""
+
             hello = json.dumps({
-                "version":     PROTO_VER,
-                "access_code": normalize_code(access_code),
-                "viewer_code": normalize_code(local_access_code),
-                "probe":       False,
-                "session_id":  "",
+                "version":       PROTO_VER,
+                "access_code":   normalize_code(access_code),
+                "viewer_code":   normalize_code(local_access_code),
+                "viewer_name":   socket.gethostname(),
+                "client_os":     platform.system(),
+                "pow_challenge": pow_ch,
+                "pow_nonce":     pow_nonce,
+                "pow_hash":      pow_hash,
+                "probe":         False,
+                "session_id":    "",
             }).encode()
             self._send_raw(fsock, hello)
 
+            # Aguarda aprovação do usuário remoto (até 40s)
+            fsock.settimeout(40.0)
             resp_raw = self._recv_raw(fsock)
             if not resp_raw:
                 fsock.close()
@@ -232,12 +258,13 @@ class RemoteLinkClient:
 
             resp = json.loads(resp_raw)
             if resp.get("status") != "accepted":
-                reason = resp.get("reason", "Conexão rejeitada")
+                reason = resp.get("reason", "Conexão rejeitada pelo usuário remoto")
                 fsock.close()
                 if not silent_error:
                     self._notify_error(reason)
                 return False
 
+            self.permissions = resp.get("permissions", {"keyboard_mouse": True, "audio": True, "mic": True})
             self.remote_info = resp.get("machine", {})
             self.remote_info["ip"] = ip
             self.remote_info["port"] = port
@@ -245,6 +272,16 @@ class RemoteLinkClient:
             self._session_id = resp.get("session_id", "")
             input_port       = resp.get("input_port", port + 1)
             single_socket    = bool(resp.get("single_socket", False))
+
+            try:
+                from core.crypto import compute_session_fingerprint
+                self.session_fingerprint = compute_session_fingerprint(
+                    self._session_id, normalize_code(access_code), normalize_code(local_access_code), pow_hash
+                )
+                self.remote_info["session_fingerprint"] = self.session_fingerprint
+                self.remote_info["pow_hash"] = pow_hash
+            except Exception:
+                pass
 
             fsock.settimeout(None)
             self._frame_sock = fsock
@@ -274,6 +311,9 @@ class RemoteLinkClient:
             self._running   = True
             self._connected = True
             self._start_workers(start_recv=True)
+
+            if self._sound_enabled and self.permissions.get("audio", True):
+                self.toggle_sound(True)
 
             self._notify_status("connected")
             if self.on_connected:
@@ -346,19 +386,34 @@ class RemoteLinkClient:
         relay.subscribe(topics["frame"])
         time.sleep(0.15)
 
+        pow_nonce = 0
+        pow_hash = ""
+        try:
+            from core.crypto import generate_pow_challenge, solve_proof_of_work
+            pow_ch = generate_pow_challenge(code)
+            pow_nonce, pow_hash = solve_proof_of_work(pow_ch, difficulty=4)
+        except Exception:
+            pow_ch = ""
+
         req_payload = json.dumps({
-            "cmd":         "connect",
-            "access_code": code,
-            "viewer_code": normalize_code(local_access_code),
-            "session_id":  sid,
-            "version":     PROTO_VER,
+            "cmd":           "connect",
+            "access_code":   code,
+            "viewer_code":   normalize_code(local_access_code),
+            "viewer_name":   socket.gethostname(),
+            "client_os":     platform.system(),
+            "pow_challenge": pow_ch,
+            "pow_nonce":     pow_nonce,
+            "pow_hash":      pow_hash,
+            "session_id":    sid,
+            "version":       PROTO_VER,
         }).encode("utf-8")
 
-        # Envia o pedido de handshake (2 tentativas rápidas para garantir entrega)
+        # Envia o pedido de handshake e aguarda autorização (até timeout)
         relay.publish(topics["ctrl"], req_payload)
-        if not hs_event.wait(timeout=2.2):
+        wait_time = max(timeout, 35.0)
+        if not hs_event.wait(timeout=2.5):
             relay.publish(topics["ctrl"], req_payload)
-            hs_event.wait(timeout=max(1.5, timeout - 2.2))
+            hs_event.wait(timeout=wait_time - 2.5)
 
         if not hs_event.is_set():
             relay.close()
@@ -371,14 +426,25 @@ class RemoteLinkClient:
         if hs_result.get("status") != "accepted":
             relay.close()
             if not silent_error:
-                self._notify_error(hs_result.get("reason", "Conexão rejeitada pelo Host"))
+                self._notify_error(hs_result.get("reason", "Conexão rejeitada pelo usuário remoto"))
             return False
 
+        self.permissions   = hs_result.get("permissions", {"keyboard_mouse": True, "audio": True, "mic": True})
         self._session_id   = hs_result.get("session_id", sid)
         self.remote_info   = hs_result.get("machine", {})
         self.remote_info["ip"]   = self.remote_info.get("public_ip") or self.remote_info.get("local_ip") or "Relay Externo"
         self.remote_info["port"] = 1883
         self.remote_info["mode"] = "Relay Externo (NAT Bypass)"
+
+        try:
+            from core.crypto import compute_session_fingerprint
+            self.session_fingerprint = compute_session_fingerprint(
+                self._session_id, code, normalize_code(local_access_code), pow_hash
+            )
+            self.remote_info["session_fingerprint"] = self.session_fingerprint
+            self.remote_info["pow_hash"] = pow_hash
+        except Exception:
+            pass
         self._relay_sock   = relay
         self._relay_topics = topics
         self._relay_mode   = True
@@ -386,6 +452,9 @@ class RemoteLinkClient:
         self._connected    = True
         self._last_ack_ts  = time.perf_counter()
         self._start_workers(start_recv=False)
+
+        if self._sound_enabled and self.permissions.get("audio", True):
+            self.toggle_sound(True)
 
         threading.Thread(
             target=self._relay_watchdog_loop,
@@ -637,6 +706,21 @@ class RemoteLinkClient:
     def disconnect(self):
         self._running    = False
         self._connected  = False
+
+        if self._audio_capture:
+            try:
+                self._audio_capture.stop()
+            except Exception:
+                pass
+            self._audio_capture = None
+
+        if self._audio_playback:
+            try:
+                self._audio_playback.stop()
+            except Exception:
+                pass
+            self._audio_playback = None
+
         if self._relay_mode and self._relay_sock:
             try:
                 self.release_all_inputs()
@@ -667,6 +751,76 @@ class RemoteLinkClient:
 
     def is_connected(self) -> bool:
         return self._connected
+
+    # ── Áudio e Microfone ──────────────────────────────────────────────────
+
+    def toggle_sound(self, enable: Optional[bool] = None) -> bool:
+        if enable is None:
+            enable = not self._sound_enabled
+        self._sound_enabled = enable
+        if enable and self._connected and self.permissions.get("audio", True):
+            if self._audio_playback is None:
+                try:
+                    from core.audio import AudioPlayback
+                    self._audio_playback = AudioPlayback()
+                    self._audio_playback.start()
+                except Exception as e:
+                    logger.debug(f"AudioPlayback start: {e}")
+            self._send_ctrl({"cmd": "audio_toggle", "enabled": True})
+        else:
+            if self._audio_playback:
+                try:
+                    self._audio_playback.stop()
+                except Exception:
+                    pass
+                self._audio_playback = None
+            if self._connected:
+                self._send_ctrl({"cmd": "audio_toggle", "enabled": False})
+        return self._sound_enabled
+
+    def toggle_mic(self, enable: Optional[bool] = None) -> bool:
+        if enable is None:
+            enable = not self._mic_enabled
+        self._mic_enabled = enable
+        if enable and self._connected and self.permissions.get("mic", True):
+            if self._audio_capture is None:
+                try:
+                    from core.audio import AudioCapture
+                    def _on_chunk(chunk: bytes):
+                        if not self._running or not self._connected or not self._mic_enabled:
+                            return
+                        sock = self._input_sock or self._frame_sock
+                        if sock:
+                            try:
+                                hdr = struct.pack(">BI", 0x05, len(chunk))
+                                with self._input_lock:
+                                    sock.sendall(hdr + chunk)
+                            except Exception:
+                                pass
+                    self._audio_capture = AudioCapture(on_chunk=_on_chunk, device_type="mic")
+                    self._audio_capture.start()
+                except Exception as e:
+                    logger.debug(f"AudioCapture start: {e}")
+        else:
+            if self._audio_capture:
+                try:
+                    self._audio_capture.stop()
+                except Exception:
+                    pass
+                self._audio_capture = None
+        return self._mic_enabled
+
+    def set_quality(self, mode: str):
+        if mode in ("high", "balanced", "fast"):
+            self._quality_mode = mode
+            if self._connected:
+                self._send_ctrl({"cmd": "set_quality", "mode": mode})
+
+    def is_sound_enabled(self) -> bool:
+        return self._sound_enabled
+
+    def is_mic_enabled(self) -> bool:
+        return self._mic_enabled
 
     # ── Input API (Direto e Preciso como no AnyDesk) ──────────────────────
 
@@ -766,6 +920,9 @@ class RemoteLinkClient:
                     break
                 if msg_type == 0x01 and self.on_frame:
                     self.on_frame(data, ts)
+                elif msg_type == 0x04:  # Áudio do host
+                    if self._sound_enabled and self._audio_playback:
+                        self._audio_playback.write(data)
         except Exception as e:
             logger.debug(f"recv_loop: {e}")
         finally:

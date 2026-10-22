@@ -243,6 +243,11 @@ class Win32InputInjector:
                 pass
 
     def mouse_move(self, x: int, y: int):
+        if _IS_WIN:
+            try:
+                _user32.SetCursorPos(int(x), int(y))
+            except Exception:
+                pass
         ax, ay = self._to_virtual_abs(x, y)
         self._send_mouse_raw(
             MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
@@ -400,6 +405,13 @@ class RemoteLinkServer:
         self.upnp_status = {"ok": False, "external_ip": None}
         self.relay_active = False
 
+        self.on_authorization_request: Optional[Callable[[dict], tuple[bool, dict]]] = None
+        self.unattended_mode          = False
+        self._session_permissions     = {"keyboard_mouse": True, "audio": True, "mic": True}
+        self._audio_capture           = None
+        self._audio_playback          = None
+        self._quality_mode            = "high"
+
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
     def start(self):
@@ -464,6 +476,7 @@ class RemoteLinkServer:
 
     def stop(self):
         self._running = False
+        self._stop_all_audio()
         if self._win_injector:
             try:
                 self._win_injector.release_all()
@@ -610,15 +623,64 @@ class RemoteLinkServer:
                                     }).encode("utf-8"))
                                 return
 
+                            # Verificação Proof-of-Work (Hashcash SHA-256)
+                            pow_verified = False
+                            pow_hash = msg.get("pow_hash", "")
+                            pow_nonce = msg.get("pow_nonce", 0)
+                            pow_ch = msg.get("pow_challenge", "")
+                            try:
+                                from core.crypto import verify_proof_of_work, compute_session_fingerprint
+                                if pow_ch and pow_nonce:
+                                    pow_verified, _ = verify_proof_of_work(pow_ch, pow_nonce, difficulty=4)
+                            except Exception as e:
+                                logger.debug(f"verify_pow: {e}")
+
+                            session_fingerprint = ""
+                            try:
+                                from core.crypto import compute_session_fingerprint
+                                session_fingerprint = compute_session_fingerprint(sid, o_code, c_code, pow_hash)
+                            except Exception:
+                                pass
+
+                            # Solicitação de Autorização do Usuário (Botão Aceitar / Recusar)
+                            permissions = {"keyboard_mouse": True, "audio": True, "mic": True}
+                            if not self.unattended_mode and self.on_authorization_request:
+                                client_req_info = {
+                                    "ip":                  "Relay Externo",
+                                    "port":                443,
+                                    "access_code":         c_code,
+                                    "viewer_code":         msg.get("viewer_code", ""),
+                                    "viewer_name":         msg.get("viewer_name") or msg.get("hostname") or "Usuário Externo",
+                                    "client_os":           msg.get("client_os", "Windows"),
+                                    "pow_verified":        pow_verified,
+                                    "session_fingerprint": session_fingerprint,
+                                    "pow_hash":            pow_hash,
+                                }
+                                accepted, perms = self.on_authorization_request(client_req_info)
+                                if not accepted:
+                                    if self._relay_sock:
+                                        self._relay_sock.publish(topics["handshake"], json.dumps({
+                                            "status": "rejected",
+                                            "session_id": sid,
+                                            "reason": "Conexão recusada pelo usuário remoto.",
+                                        }).encode("utf-8"))
+                                    return
+                                if isinstance(perms, dict):
+                                    permissions.update(perms)
+
+                            self._session_permissions = permissions
                             self._session_id = sid
                             self._last_client_ack = time.perf_counter()
                             if self._relay_sock:
                                 self._relay_sock.publish(topics["handshake"], json.dumps({
-                                    "status":     "accepted",
-                                    "session_id": sid,
-                                    "machine":    self._host_info(),
-                                    "version":    PROTO_VER,
-                                    "mode":       "relay",
+                                    "status":              "accepted",
+                                    "session_id":          sid,
+                                    "session_fingerprint": session_fingerprint,
+                                    "pow_verified":        pow_verified,
+                                    "machine":             self._host_info(),
+                                    "version":             PROTO_VER,
+                                    "mode":                "relay",
+                                    "permissions":         permissions,
                                 }).encode("utf-8"))
                             self._notify_status("connected")
                             if self.on_client_connect:
@@ -664,6 +726,14 @@ class RemoteLinkServer:
 
     def _grab_screen_image(self, sct, mon):
         from PIL import Image
+        if _IS_WIN:
+            try:
+                hdesk = _user32.OpenInputDesktop(0, False, 0x01FF)
+                if hdesk:
+                    _user32.SetThreadDesktop(hdesk)
+                    _user32.CloseDesktop(hdesk)
+            except Exception:
+                pass
         if sct is not None and mon is not None:
             try:
                 raw = sct.grab(mon)
@@ -818,19 +888,69 @@ class RemoteLinkServer:
                     logger.warning(f"Código inválido de {addr}")
                     return
 
-            # Aceita — guarda session_id para parear com canal de input
+            # Verificação Proof-of-Work (Hashcash SHA-256)
+            pow_verified = False
+            pow_hash = hello.get("pow_hash", "")
+            pow_nonce = hello.get("pow_nonce", 0)
+            pow_ch = hello.get("pow_challenge", "")
+            try:
+                from core.crypto import verify_proof_of_work, compute_session_fingerprint
+                if pow_ch and pow_nonce:
+                    pow_verified, _ = verify_proof_of_work(pow_ch, pow_nonce, difficulty=4)
+            except Exception as e:
+                logger.debug(f"verify_pow: {e}")
+
+            # Gera session_id antes para permitir cômputo do fingerprint da sessão
             sid = str(uuid.uuid4())[:8]
             self._session_id = sid
             self._last_client_ack = time.perf_counter()
 
+            session_fingerprint = ""
+            try:
+                from core.crypto import compute_session_fingerprint
+                session_fingerprint = compute_session_fingerprint(sid, own_code, client_code, pow_hash)
+            except Exception:
+                pass
+
+            # Solicitação de Autorização do Usuário (Botão Aceitar / Recusar)
+            permissions = {"keyboard_mouse": True, "audio": True, "mic": True}
+            if not self.unattended_mode and self.on_authorization_request:
+                client_req_info = {
+                    "ip":                  addr[0],
+                    "port":                addr[1],
+                    "access_code":         client_code,
+                    "viewer_code":         hello.get("viewer_code", ""),
+                    "viewer_name":         hello.get("viewer_name") or hello.get("hostname") or addr[0],
+                    "client_os":           hello.get("client_os", "Windows"),
+                    "pow_verified":        pow_verified,
+                    "session_fingerprint": session_fingerprint,
+                    "pow_hash":            pow_hash,
+                }
+                accepted, perms = self.on_authorization_request(client_req_info)
+                if not accepted:
+                    self._send_msg(conn, json.dumps({
+                        "status": "rejected",
+                        "reason": "Conexão recusada pelo usuário no computador remoto.",
+                    }).encode())
+                    conn.close()
+                    logger.info(f"Conexão de {addr} recusada pelo usuário local")
+                    return
+                if isinstance(perms, dict):
+                    permissions.update(perms)
+
+            self._session_permissions = permissions
+
             self._send_msg(conn, json.dumps({
-                "status":        "accepted",
-                "machine":       self._host_info(),
-                "version":       PROTO_VER,
-                "session_id":    sid,
-                "input_port":    self.input_port,
-                "single_socket": True,
-                "open_ports":    self.listening_ports,
+                "status":              "accepted",
+                "machine":             self._host_info(),
+                "version":             PROTO_VER,
+                "session_id":          sid,
+                "session_fingerprint": session_fingerprint,
+                "pow_verified":        pow_verified,
+                "input_port":          self.input_port,
+                "single_socket":       True,
+                "open_ports":          self.listening_ports,
+                "permissions":         permissions,
             }).encode())
 
             # Se for conexão reversa, tenta abrir segundo socket opcional, mas o canal único já cobre input!
@@ -872,12 +992,16 @@ class RemoteLinkServer:
             if self.on_client_connect:
                 self.on_client_connect(addr, self._host_info())
 
+            if self._session_permissions.get("audio", True):
+                self._start_audio_capture(conn)
+
             # Inicia stream de frames nesta thread
             self._capture_loop(conn, sid, addr[0])
 
         except Exception as e:
             logger.error(f"frame_conn error: {e}")
         finally:
+            self._stop_all_audio()
             if self._win_injector:
                 try:
                     self._win_injector.release_all()
@@ -980,6 +1104,16 @@ class RemoteLinkServer:
                     cmd = ctrl_msg.get("cmd")
                     if cmd == "ack":
                         self._last_client_ack = time.perf_counter()
+                    elif cmd == "set_quality":
+                        mode = ctrl_msg.get("mode") or ctrl_msg.get("quality")
+                        if mode in ("high", "balanced", "fast"):
+                            self._quality_mode = mode
+                    elif cmd == "audio_toggle":
+                        enabled = bool(ctrl_msg.get("enabled", True))
+                        if enabled and self._session_permissions.get("audio", True):
+                            self._start_audio_capture(conn)
+                        else:
+                            self._stop_audio_capture()
                     elif cmd == "disconnect":
                         if self._frame_conn:
                             try:
@@ -987,9 +1121,56 @@ class RemoteLinkServer:
                             except Exception:
                                 pass
                         break
+                elif msg_type == 0x05: # mic audio from viewer
+                    if self._session_permissions.get("mic", True):
+                        if self._audio_playback is None:
+                            try:
+                                from core.audio import AudioPlayback
+                                self._audio_playback = AudioPlayback()
+                                self._audio_playback.start()
+                            except Exception:
+                                pass
+                        if self._audio_playback:
+                            self._audio_playback.write(data)
             except Exception as e:
                 logger.debug(f"input_loop: {e}")
                 break
+
+    def _start_audio_capture(self, conn: socket.socket):
+        if self._audio_capture and self._audio_capture.is_running:
+            return
+        try:
+            from core.audio import AudioCapture
+            def _on_chunk(chunk: bytes):
+                if not self._running or self._frame_conn is not conn:
+                    return
+                try:
+                    hdr = struct.pack(">BI", 0x04, len(chunk))
+                    conn.sendall(hdr + chunk)
+                except Exception:
+                    pass
+
+            self._audio_capture = AudioCapture(on_chunk=_on_chunk, device_type="speaker")
+            self._audio_capture.start()
+        except Exception as e:
+            logger.debug(f"_start_audio_capture: {e}")
+
+    def _stop_audio_capture(self):
+        if self._audio_capture:
+            try:
+                self._audio_capture.stop()
+            except Exception:
+                pass
+            self._audio_capture = None
+
+    def _stop_all_audio(self):
+        self._stop_audio_capture()
+        if self._audio_playback:
+            try:
+                self._audio_playback.stop()
+            except Exception:
+                pass
+            self._audio_playback = None
 
     # ── Execução de input (Win32 SendInput Nativo + Fallback Multiplataforma) ──
 
@@ -1005,6 +1186,8 @@ class RemoteLinkServer:
         return m["left"] + int(ev.get("x", 0)), m["top"] + int(ev.get("y", 0))
 
     def _exec_input(self, ev: dict, ctrl):
+        if not self._session_permissions.get("keyboard_mouse", True):
+            return
         t = ev.get("type")
 
         # Caminho rápido nativo Windows via SendInput (igual ao AnyDesk.exe)
@@ -1123,22 +1306,47 @@ class RemoteLinkServer:
         except Exception as e:
             logger.info(f"mss init fallback ({e})")
 
-        logger.info(f"Capturando monitor: {self._mon_rect}")
+        if _IS_WIN:
+            try:
+                _user32.SetProcessDPIAware()
+                hdesk = _user32.OpenInputDesktop(0, False, 0x01FF)
+                if hdesk:
+                    _user32.SetThreadDesktop(hdesk)
+                    _user32.CloseDesktop(hdesk)
+            except Exception:
+                pass
+
+        logger.info(f"Capturando monitor: {self._mon_rect} (target >27 FPS, mode={self._quality_mode})")
         err_ts = 0
 
         is_wan = not client_ip.startswith(("192.168.", "10.", "172.", "127."))
         try:
-            conn.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 256 * 1024 if is_wan else 512 * 1024)
+            conn.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024 * 1024)
+            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         except Exception:
             pass
 
         buf = io.BytesIO()
-        quality = 62 if is_wan else 72
-        max_w   = 1600 if is_wan else 1920
+        target_fps = 35.0
+        frame_interval = 1.0 / target_fps
 
         while self._running and self._session_id == sid:
             t0 = time.perf_counter()
             try:
+                mode = getattr(self, "_quality_mode", "high")
+                if mode == "high":
+                    quality = 82
+                    subsampling = 0  # 4:4:4 ultra-nítido
+                    max_w = 1920
+                elif mode == "fast":
+                    quality = 65
+                    subsampling = 2
+                    max_w = 1366
+                else:  # balanced
+                    quality = 74
+                    subsampling = 1
+                    max_w = 1600
+
                 img = self._grab_screen_image(sct, mon)
                 w, h = img.size
 
@@ -1148,21 +1356,12 @@ class RemoteLinkServer:
 
                 buf.seek(0)
                 buf.truncate(0)
-                subsampling = 2 if (is_wan and quality < 60) else 0
                 img.save(buf, "JPEG", quality=quality, subsampling=subsampling, optimize=False)
                 frame = buf.getvalue()
 
                 ts  = int(time.time() * 1000) & 0xFFFFFFFF
                 hdr = struct.pack(">BII", 0x01, len(frame), ts)
-                send_t0 = time.perf_counter()
                 conn.sendall(hdr + frame)
-                send_dt = time.perf_counter() - send_t0
-
-                if send_dt > 0.045:
-                    quality = max(45, quality - 4)
-                    max_w   = 1366
-                elif send_dt < 0.012 and quality < (68 if is_wan else 75):
-                    quality += 1
 
             except (BrokenPipeError, ConnectionResetError, OSError):
                 break
@@ -1171,11 +1370,11 @@ class RemoteLinkServer:
                 if now - err_ts > 2.0:
                     logger.warning(f"capture: {e}")
                     err_ts = now
-                time.sleep(0.05)
+                time.sleep(0.02)
                 continue
 
             elapsed = time.perf_counter() - t0
-            wait = FRAME_TIME - elapsed
+            wait = frame_interval - elapsed
             if wait > 0:
                 time.sleep(wait)
 

@@ -16,3 +16,7 @@ pyautogui>=0.9.54
 
 # Optional: better performance
 numpy>=1.24.0
+
+# Audio & Microphone streaming
+sounddevice>=0.5.0
+
